@@ -1,6 +1,7 @@
 const Usuario = require("../models/Usuario");
 const generarJWT = require("../helpers/generarJWT");
 const { OAuth2Client } = require("google-auth-library");
+const { google } = require("googleapis");
 const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
 // REGISTRO TRADICIONAL
@@ -216,9 +217,56 @@ const autenticarConGoogle = async (req, res) => {
   }
 };
 
+
+// HANDLER PARA GOOGLE OAUTH CALLBACK (GET)
+const googleCallbackHandler = async (req, res) => {
+  try {
+    const code = req.query.code;
+    if (!code) return res.status(400).send("Código de Google no recibido");
+
+    // Prepara el OAuth2Client
+    const oauth2Client = new google.auth.OAuth2(
+      process.env.GOOGLE_CLIENT_ID,
+      process.env.GOOGLE_CLIENT_SECRET,
+      "https://anunciaya-backend-production.up.railway.app/auth/google/callback"
+    );
+
+    // Intercambia el code por tokens
+    const { tokens } = await oauth2Client.getToken(code);
+    oauth2Client.setCredentials(tokens);
+
+    // Obtén la información del usuario
+    const oauth2 = google.oauth2({ version: "v2", auth: oauth2Client });
+    const userInfo = await oauth2.userinfo.get();
+    const { email, name } = userInfo.data;
+
+    let usuario = await Usuario.findOne({ correo: email });
+
+    if (!usuario) {
+      // Si el usuario no existe, puedes redirigir a un registro especial
+      return res.redirect(
+        `https://anunciaya-frontend.vercel.app/?googleNewUser=1&email=${encodeURIComponent(email)}&name=${encodeURIComponent(name)}`
+      );
+    }
+
+    // Si existe, genera token y redirige con el token
+    const token = await generarJWT(usuario._id);
+
+    // Puedes redirigir al frontend con el token como query param
+    return res.redirect(
+      `https://anunciaya-frontend.vercel.app/?googleToken=${token}`
+    );
+
+  } catch (error) {
+    console.error("❌ Error en Google Callback:", error.message);
+    return res.status(500).send("Error en autenticación con Google");
+  }
+};
+
 module.exports = {
   registrarUsuario,
   loginUsuario,
   seleccionarPerfil,
   autenticarConGoogle,
+  googleCallbackHandler,
 };
