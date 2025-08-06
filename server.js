@@ -8,10 +8,16 @@ const contenidoLocalRoutes = require("./routes/contenidoLocalRoutes");
 const app = express();
 
 // ✅ Habilitar CORS para permitir conexión con frontend
+const allowedOrigins = [
+  "http://localhost:5173",
+  "https://anunciaya-frontend.vercel.app"
+];
+
 app.use(cors({
-  origin: "http://localhost:5173",  // ← esto debe coincidir con tu frontend
+  origin: allowedOrigins,
   credentials: true
 }));
+
 
 // ✅ Middleware para interpretar JSON
 app.use(express.json());
