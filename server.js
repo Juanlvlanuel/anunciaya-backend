@@ -15,14 +15,14 @@ const allowedOrigins = [
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Permite peticiones sin origen (como postman o curl)
+    // Permite peticiones sin origen (como postman, curl, o algunas herramientas internas)
     if (!origin) return callback(null, true);
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     }
+    console.log("[CORS BLOCKED] Request from origin:", origin); // <--- LOG para debug
     return callback(new Error("CORS no permitido por este origen: " + origin));
   },
-  credentials: true,
   optionsSuccessStatus: 200,
 }));
 
