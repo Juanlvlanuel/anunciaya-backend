@@ -169,7 +169,6 @@ const autenticarConGoogle = async (req, res) => {
       // Si NO viene tipo = INTENTO DE LOGIN (permite login Google)
       const token = await generarJWT(usuario._id);
       return res.status(200).json({
-        mensaje: "Exitoso",
         token,
         usuario: {
           _id: usuario._id,
