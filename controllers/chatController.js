@@ -54,32 +54,38 @@ async function ensurePrivado(req, res) {
     const me = asObjectId(getAuthUserId(req));
     let { usuarioAId, usuarioBId, anuncioId } = req.body || {};
 
-    let other = usuarioBId && String(usuarioBId) !== String(me) ? usuarioBId : usuarioAId;
-    if (!other || String(other) === String(me)) {
-      return res.status(400).json({ mensaje: "Falta usuario destino" });
-    }
-    if (!Types.ObjectId.isValid(String(other))) {
-      return res.status(400).json({ mensaje: "ID de usuario destino inválido" });
-    }
-    other = asObjectId(other);
+    // Normalizar IDs y determinar "other"
+    usuarioAId = usuarioAId && Types.ObjectId.isValid(usuarioAId) ? asObjectId(usuarioAId) : null;
+    usuarioBId = usuarioBId && Types.ObjectId.isValid(usuarioBId) ? asObjectId(usuarioBId) : null;
 
+    let other = null;
+    if (usuarioAId && String(usuarioAId) !== String(me)) other = usuarioAId;
+    if (usuarioBId && String(usuarioBId) !== String(me)) other = usuarioBId;
+
+    if (!other || String(other) === String(me)) {
+      return res.status(400).json({ mensaje: "Falta usuario destino válido" });
+    }
+
+    // Verificar existencia de ambos usuarios
     const [yo, el] = await Promise.all([
       Usuario.findById(me).select("_id"),
       Usuario.findById(other).select("_id"),
     ]);
     if (!yo || !el) return res.status(404).json({ mensaje: "Usuario no encontrado" });
 
+    // Buscar chat existente exacto
     let chat = await Chat.findOne({
       tipo: "privado",
       participantes: { $all: [me, other], $size: 2 },
-      ...(anuncioId ? { anuncioId } : {}),
+      ...(anuncioId ? { anuncioId: asObjectId(anuncioId) } : {}),
     }).populate("participantes", "_id nombre nickname correo fotoPerfil tipo");
 
+    // Crear si no existe
     if (!chat) {
       chat = await Chat.create({
         tipo: "privado",
         participantes: [me, other],
-        anuncioId: anuncioId || null,
+        anuncioId: anuncioId ? asObjectId(anuncioId) : null,
       });
       chat = await Chat.findById(chat._id).populate(
         "participantes",
@@ -93,6 +99,7 @@ async function ensurePrivado(req, res) {
     return res.status(500).json({ mensaje: "Error al crear/obtener chat" });
   }
 }
+
 
 /* =========================
    Listar chats (favoritos arriba)
