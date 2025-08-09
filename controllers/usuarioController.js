@@ -1,3 +1,4 @@
+// controllers/usuarioController.js (fragmento relevante)
 const Usuario = require("../models/Usuario");
 const generarJWT = require("../helpers/generarJWT");
 const { OAuth2Client } = require("google-auth-library");
@@ -67,7 +68,7 @@ const loginUsuario = async (req, res) => {
       return res.status(400).json({ mensaje: "Faltan campos obligatorios" });
     }
 
-    // Buscar usuario por correo O por nickname
+    // Buscar usuario por correo O por nickname (sin normalizar: respeta mayúsculas y espacios)
     const usuario = await Usuario.findOne({
       $or: [
         { correo: correo.trim().toLowerCase() },
@@ -106,11 +107,10 @@ const loginUsuario = async (req, res) => {
 };
 
 
-
 // SELECCIONAR PERFIL
 const seleccionarPerfil = async (req, res) => {
   try {
-    const usuarioId = req.usuarioId;
+    const usuarioId = req.usuario?._id; // ✅ se toma del middleware verificarToken
     const { perfil } = req.body;
 
     if (!perfil) {
@@ -262,10 +262,39 @@ const googleCallbackHandler = async (req, res) => {
   }
 };
 
+/* === NUEVO: BÚSQUEDA DE USUARIOS POR NICKNAME O CORREO (case-sensitive, permite espacios) === */
+const searchUsuarios = async (req, res) => {
+  try {
+    const q = (req.query.q || "").trim();
+    const limit = Math.min(parseInt(req.query.limit || "10", 10), 50);
+    const exclude = (req.query.exclude || "").trim(); // opcional: excluir al actual
+
+    if (!q) return res.json([]);
+
+    // escapamos regex para tratar q como literal y buscar "contiene"
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(escaped); // sin bandera 'i' => sensible a mayúsculas
+
+    const or = [{ nickname: { $regex: regex } }, { correo: { $regex: regex } }];
+
+    const filter = exclude ? { $and: [{ _id: { $ne: exclude } }, { $or: or }] } : { $or: or };
+
+    const users = await Usuario.find(filter)
+      .select("_id nombre nickname correo fotoPerfil tipo")
+      .limit(limit);
+
+    res.json(users);
+  } catch (e) {
+    console.error("❌ searchUsuarios:", e.message);
+    res.status(500).json({ mensaje: "Error en búsqueda" });
+  }
+};
+
 module.exports = {
   registrarUsuario,
   loginUsuario,
   seleccionarPerfil,
   autenticarConGoogle,
   googleCallbackHandler,
+  searchUsuarios,
 };
