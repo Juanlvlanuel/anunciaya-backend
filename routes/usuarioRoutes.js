@@ -6,7 +6,8 @@ const {
   loginUsuario,
   autenticarConGoogle,
   seleccionarPerfil,
-  googleCallbackHandler, // <--- IMPORTANTE: agrega esto
+  googleCallbackHandler,
+  searchUsuarios, // <- NUEVO
 } = require("../controllers/usuarioController");
 
 // Ruta para seleccionar perfil, protegida por token
@@ -19,5 +20,8 @@ router.post("/login", loginUsuario);
 router.post("/google", autenticarConGoogle);
 // Callback GET para Google OAuth (este endpoint lo usa Google)
 router.get("/auth/google/callback", googleCallbackHandler);
+
+// NUEVO: búsqueda por nickname/correo
+router.get("/search", searchUsuarios);
 
 module.exports = router;
