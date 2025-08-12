@@ -80,8 +80,37 @@ async function ensurePrivado(req, res) {
       ...(anuncioId ? { anuncioId: asObjectId(anuncioId) } : {}),
     }).populate("participantes", "_id nombre nickname correo fotoPerfil tipo");
 
-    // Crear si no existe
+    
+    // Restaurar si estaba eliminado para mí (opción 1)
+    if (chat && Array.isArray(chat.deletedFor)) {
+      const meStr = String(me);
+      const hasMe = chat.deletedFor.some(x => String(x) === meStr);
+      if (hasMe) {
+        chat.deletedFor = chat.deletedFor.filter(x => String(x) !== meStr);
+        await chat.save();
+        chat = await Chat.findById(chat._id).populate(
+          "participantes",
+          "_id nombre nickname correo fotoPerfil tipo"
+        );
+      }
+    }
+
+// Crear si no existe
     if (!chat) {
+    // Restaurar si estaba eliminado para mí (opción 1)
+    if (chat && Array.isArray(chat.deletedFor)) {
+      const meStr = String(me);
+      const hasMe = chat.deletedFor.some(x => String(x) == meStr);
+      if (hasMe) {
+        chat.deletedFor = chat.deletedFor.filter(x => String(x) != meStr);
+        await chat.save();
+        chat = await Chat.findById(chat._id).populate(
+          "participantes",
+          "_id nombre nickname correo fotoPerfil tipo"
+        );
+      }
+    }
+
       chat = await Chat.create({
         tipo: "privado",
         participantes: [me, other],
@@ -175,18 +204,27 @@ async function listarChats(req, res) {
 ========================= */
 async function obtenerMensajes(req, res) {
   try {
-    const uid = getAuthUserId(req);
+    const uid = String(req.usuario?._id || req.usuarioId || "");
     const { chatId } = req.params;
 
     const chat = await Chat.findById(chatId);
     if (!chat) return res.status(404).json({ mensaje: "Chat no encontrado" });
 
-    if (!toIdStrings(chat.participantes).includes(String(uid))) {
+    if (!(chat.participantes || []).some((x) => String(x) === uid)) {
       return res.status(403).json({ mensaje: "No autorizado" });
     }
 
-    const mensajes = await Mensaje.find({ chat: chatId }).sort({ createdAt: 1 }).limit(500);
-    res.json(mensajes);
+    const mensajes = await Mensaje.find({ chat: chatId })
+      .sort({ createdAt: 1 })
+      .lean();
+
+    // Compatibilidad: si hubiera datos viejos con "reply", lo mapeamos
+    const normalizados = mensajes.map((m) => {
+      if (!m.replyTo && m.reply) m.replyTo = m.reply;
+      return m;
+    });
+
+    res.json(normalizados);
   } catch (e) {
     console.error("obtenerMensajes:", e);
     res.status(500).json({ mensaje: "Error al obtener mensajes" });
@@ -376,6 +414,60 @@ async function obtenerPins(req, res) {
 }
 
 /* =========================
+   Mensajes: editar y eliminar
+========================= */
+async function editarMensaje(req, res) {
+  try {
+    const uid = getAuthUserId(req);
+    const { messageId } = req.params;
+    const { texto } = req.body || {};
+
+    if (!texto || typeof texto !== "string") {
+      return res.status(400).json({ mensaje: "Texto inválido" });
+    }
+
+    const msg = await Mensaje.findById(messageId);
+    if (!msg) return res.status(404).json({ mensaje: "Mensaje no encontrado" });
+
+    // Debe ser autor del mensaje
+    if (String(msg.emisor) !== String(uid)) {
+      return res.status(403).json({ mensaje: "Solo puedes editar tus propios mensajes" });
+    }
+
+    msg.texto = texto;
+    msg.editedAt = new Date();
+    await msg.save();
+
+    res.json({ ok: true, mensaje: msg });
+  } catch (e) {
+    console.error("editarMensaje:", e);
+    res.status(500).json({ mensaje: "Error al editar mensaje" });
+  }
+}
+
+async function eliminarMensaje(req, res) {
+  try {
+    const uid = getAuthUserId(req);
+    const { messageId } = req.params;
+
+    const msg = await Mensaje.findById(messageId);
+    if (!msg) return res.status(404).json({ mensaje: "Mensaje no encontrado" });
+
+    // Debe ser autor del mensaje
+    if (String(msg.emisor) !== String(uid)) {
+      return res.status(403).json({ mensaje: "Solo puedes borrar tus propios mensajes" });
+    }
+
+    await Mensaje.deleteOne({ _id: messageId });
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("eliminarMensaje:", e);
+    res.status(500).json({ mensaje: "Error al eliminar mensaje" });
+  }
+}
+
+/* =========================
    Admin (si los usas)
 ========================= */
 async function adminListarMensajes(req, res) {
@@ -411,6 +503,9 @@ module.exports = {
   fijarMensaje,
   desfijarMensaje,
   obtenerPins,
+  // mensajes
+  editarMensaje,
+  eliminarMensaje,
   // admin
   adminListarMensajes,
   adminEliminarChat,

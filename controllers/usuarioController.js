@@ -4,7 +4,14 @@ const generarJWT = require("../helpers/generarJWT");
 const { OAuth2Client } = require("google-auth-library");
 const { google } = require("googleapis");
 const { Types } = require("mongoose");
-const client = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+
+// Soporta múltiples Client IDs (dev/prod)
+const CLIENT_ID_MAIN = process.env.GOOGLE_CLIENT_ID || "";
+const CLIENT_ID_DEV  = process.env.GOOGLE_CLIENT_ID_DEV || "";
+const CLIENT_ID_PROD = process.env.GOOGLE_CLIENT_ID_PROD || "";
+const GOOGLE_AUDIENCES = [CLIENT_ID_MAIN, CLIENT_ID_DEV, CLIENT_ID_PROD].filter(Boolean);
+
+const client = new OAuth2Client(CLIENT_ID_MAIN || CLIENT_ID_DEV || CLIENT_ID_PROD);
 
 // REGISTRO TRADICIONAL
 const registrarUsuario = async (req, res) => {
@@ -59,7 +66,6 @@ const registrarUsuario = async (req, res) => {
   }
 };
 
-
 // LOGIN TRADICIONAL — POR CORREO O NICKNAME
 const loginUsuario = async (req, res) => {
   try {
@@ -105,7 +111,6 @@ const loginUsuario = async (req, res) => {
   }
 };
 
-
 // SELECCIONAR PERFIL
 const seleccionarPerfil = async (req, res) => {
   try {
@@ -131,7 +136,7 @@ const seleccionarPerfil = async (req, res) => {
   }
 };
 
-// AUTENTICACIÓN CON GOOGLE — BLINDADA
+// AUTENTICACIÓN CON GOOGLE — acepta dev/prod sin tocar prod
 const autenticarConGoogle = async (req, res) => {
   try {
     const { credential, tipo, perfil } = req.body;
@@ -141,7 +146,7 @@ const autenticarConGoogle = async (req, res) => {
 
     const ticket = await client.verifyIdToken({
       idToken: credential,
-      audience: process.env.GOOGLE_CLIENT_ID,
+      audience: GOOGLE_AUDIENCES.length ? GOOGLE_AUDIENCES : undefined,
     });
 
     const payload = ticket.getPayload();
@@ -151,6 +156,7 @@ const autenticarConGoogle = async (req, res) => {
     let usuario = await Usuario.findOne({ correo });
 
     if (usuario) {
+      // Si llega "tipo" es intento de registro; devolvemos mensajes de cuenta existente
       if (tipo) {
         if (usuario.tipo === tipo) {
           return res.status(400).json({
@@ -177,11 +183,13 @@ const autenticarConGoogle = async (req, res) => {
       });
     }
 
+    // No existe: requiere tipo/perfil para registrarse
     if (!tipo || !perfil) {
       return res.status(400).json({
         mensaje: "No existe ninguna cuenta Registrada con este Correo. Regístrate para Iniciar Sesión."
       });
     }
+
     usuario = new Usuario({
       correo,
       nombre,
@@ -212,7 +220,6 @@ const autenticarConGoogle = async (req, res) => {
   }
 };
 
-
 // HANDLER PARA GOOGLE OAUTH CALLBACK (GET)
 const googleCallbackHandler = async (req, res) => {
   try {
@@ -220,7 +227,7 @@ const googleCallbackHandler = async (req, res) => {
     if (!code) return res.status(400).send("Código de Google no recibido");
 
     const oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
+      CLIENT_ID_PROD || CLIENT_ID_MAIN,
       process.env.GOOGLE_CLIENT_SECRET,
       "https://anunciaya-backend-production.up.railway.app/auth/google/callback"
     );
@@ -252,7 +259,6 @@ const googleCallbackHandler = async (req, res) => {
   }
 };
 
-
 /* === BÚSQUEDA GLOBAL OPTIMIZADA === */
 const searchUsuarios = async (req, res) => {
   try {
@@ -263,7 +269,6 @@ const searchUsuarios = async (req, res) => {
 
     if (!q) return res.json([]);
 
-    // Expresión regular para búsqueda parcial e insensible a mayúsculas
     const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const regex = new RegExp(escaped.split(/\s+/).join(".*"), "i");
 
@@ -287,7 +292,6 @@ const searchUsuarios = async (req, res) => {
     res.status(500).json({ mensaje: "Error en búsqueda" });
   }
 };
-
 
 module.exports = {
   registrarUsuario,

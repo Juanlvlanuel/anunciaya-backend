@@ -7,7 +7,7 @@ const {
   listarChats,
   obtenerMensajes,
   eliminarParaMi,
-  toggleFavorito,   // <-- nuevo
+  toggleFavorito,
   marcarFavorito,
   quitarFavorito,
   fijarMensaje,
@@ -15,6 +15,9 @@ const {
   obtenerPins,
   adminListarMensajes,
   adminEliminarChat,
+  // 👇 nuevas
+  editarMensaje,
+  eliminarMensaje,
 } = require("../controllers/chatController");
 
 // Crear / obtener chat 1:1
@@ -30,14 +33,18 @@ router.get("/:chatId/mensajes", verificarToken, obtenerMensajes);
 router.delete("/:chatId/me", verificarToken, eliminarParaMi);
 
 // Favoritos (conversaciones)
-router.patch("/:chatId/favorite", verificarToken, toggleFavorito); // <-- nuevo toggle
-router.post("/:chatId/favorite", verificarToken, marcarFavorito);  // legacy
-router.delete("/:chatId/favorite", verificarToken, quitarFavorito); // legacy
+router.patch("/:chatId/favorite", verificarToken, toggleFavorito); // toggle
+router.post("/:chatId/favorite", verificarToken, marcarFavorito);  // legacy add
+router.delete("/:chatId/favorite", verificarToken, quitarFavorito); // legacy remove
 
-// Pins (por usuario)
+// Pins por usuario
 router.get("/:chatId/pins", verificarToken, obtenerPins);
 router.post("/messages/:messageId/pin", verificarToken, fijarMensaje);
 router.delete("/messages/:messageId/pin", verificarToken, desfijarMensaje);
+
+// === Mensajes: editar y borrar ===
+router.patch("/messages/:messageId", verificarToken, editarMensaje);
+router.delete("/messages/:messageId", verificarToken, eliminarMensaje);
 
 // Admin
 router.get("/admin/:chatId/messages", adminListarMensajes);
