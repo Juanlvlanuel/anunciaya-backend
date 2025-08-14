@@ -8,15 +8,20 @@ const { OAuth2Client } = require("google-auth-library");
 const { google } = require("googleapis");
 const { Types } = require("mongoose");
 
-// Normaliza variables de entorno para Google OAuth
+// === Google OAuth env ===
 const CLIENT_ID =
   process.env.GOOGLE_CLIENT_ID ||
-  process.env.CLIENT_ID_PROD ||
-  process.env.CLIENT_ID_MAIN;
+  process.env.GOOGLE_CLIENT_ID_PROD || // <- soporta el nombre que pusiste en Railway
+  "";
 
-const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+const CLIENT_SECRET =
+  process.env.GOOGLE_CLIENT_SECRET ||
+  process.env.GOOGLE_CLIENT_SECRET_PROD || // por si algún día lo renombras igual
+  "";
 
 const REDIRECT_URI =
+  process.env.GOOGLE_CALLBACK_URL ||
+  process.env.GOOGLE_CALLBACK_URL_PROD ||
   "https://anunciaya-backend-production.up.railway.app/api/usuarios/auth/google/callback";
 
 /* ===================== Helpers ===================== */
@@ -408,7 +413,7 @@ const googleCallbackHandler = async (req, res) => {
     );
 
     console.log("[OAUTH] Using redirect:", REDIRECT_URI);
-    
+
     const { tokens } = await oauth2Client.getToken(code);
     oauth2Client.setCredentials(tokens);
 
