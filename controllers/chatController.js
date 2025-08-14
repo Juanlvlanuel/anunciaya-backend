@@ -1,3 +1,5 @@
+// controllers/chatController-1.js
+// Basado en tu archivo original, con validaciones y manejo de errores uniforme.
 const Chat = require("../models/Chat");
 const Mensaje = require("../models/Mensaje");
 const Usuario = require("../models/Usuario");
@@ -15,6 +17,16 @@ function toIdStrings(arr = []) {
 function asObjectId(id) {
   const s = String(id || "");
   return Types.ObjectId.isValid(s) ? new Types.ObjectId(s) : id;
+}
+function isValidObjectId(id) {
+  const s = String(id || "");
+  return Types.ObjectId.isValid(s);
+}
+function sanitizeTexto(texto) {
+  if (typeof texto !== "string") return "";
+  const t = texto.trim();
+  // Limita tamaño para evitar payloads enormes en edición
+  return t.length > 4000 ? t.slice(0, 4000) : t;
 }
 
 /* ---- helpers específicos de pins (soporta Map, objeto o nada) ---- */
@@ -54,9 +66,16 @@ async function ensurePrivado(req, res) {
     const me = asObjectId(getAuthUserId(req));
     let { usuarioAId, usuarioBId, anuncioId } = req.body || {};
 
+    // Validaciones básicas
+    const aValid = usuarioAId && Types.ObjectId.isValid(String(usuarioAId));
+    const bValid = usuarioBId && Types.ObjectId.isValid(String(usuarioBId));
+    if (!aValid && !bValid) {
+      return res.status(400).json({ mensaje: "Falta usuario destino" });
+    }
+
     // Normalizar IDs y determinar "other"
-    usuarioAId = usuarioAId && Types.ObjectId.isValid(usuarioAId) ? asObjectId(usuarioAId) : null;
-    usuarioBId = usuarioBId && Types.ObjectId.isValid(usuarioBId) ? asObjectId(usuarioBId) : null;
+    usuarioAId = aValid ? asObjectId(usuarioAId) : null;
+    usuarioBId = bValid ? asObjectId(usuarioBId) : null;
 
     let other = null;
     if (usuarioAId && String(usuarioAId) !== String(me)) other = usuarioAId;
@@ -80,13 +99,12 @@ async function ensurePrivado(req, res) {
       ...(anuncioId ? { anuncioId: asObjectId(anuncioId) } : {}),
     }).populate("participantes", "_id nombre nickname correo fotoPerfil tipo");
 
-    
-    // Restaurar si estaba eliminado para mí (opción 1)
+    // Restaurar si estaba eliminado para mí
     if (chat && Array.isArray(chat.deletedFor)) {
       const meStr = String(me);
-      const hasMe = chat.deletedFor.some(x => String(x) === meStr);
+      const hasMe = chat.deletedFor.some((x) => String(x) === meStr);
       if (hasMe) {
-        chat.deletedFor = chat.deletedFor.filter(x => String(x) !== meStr);
+        chat.deletedFor = chat.deletedFor.filter((x) => String(x) !== meStr);
         await chat.save();
         chat = await Chat.findById(chat._id).populate(
           "participantes",
@@ -95,21 +113,21 @@ async function ensurePrivado(req, res) {
       }
     }
 
-// Crear si no existe
+    // Crear si no existe
     if (!chat) {
-    // Restaurar si estaba eliminado para mí (opción 1)
-    if (chat && Array.isArray(chat.deletedFor)) {
-      const meStr = String(me);
-      const hasMe = chat.deletedFor.some(x => String(x) == meStr);
-      if (hasMe) {
-        chat.deletedFor = chat.deletedFor.filter(x => String(x) != meStr);
-        await chat.save();
-        chat = await Chat.findById(chat._id).populate(
-          "participantes",
-          "_id nombre nickname correo fotoPerfil tipo"
-        );
+      // (conserva tu bloque de restauración redundante aunque aquí no aplica)
+      if (chat && Array.isArray(chat.deletedFor)) {
+        const meStr = String(me);
+        const hasMe = chat.deletedFor.some((x) => String(x) == meStr);
+        if (hasMe) {
+          chat.deletedFor = chat.deletedFor.filter((x) => String(x) != meStr);
+          await chat.save();
+          chat = await Chat.findById(chat._id).populate(
+            "participantes",
+            "_id nombre nickname correo fotoPerfil tipo"
+          );
+        }
       }
-    }
 
       chat = await Chat.create({
         tipo: "privado",
@@ -129,7 +147,6 @@ async function ensurePrivado(req, res) {
   }
 }
 
-
 /* =========================
    Listar chats (favoritos arriba)
 ========================= */
@@ -147,12 +164,9 @@ async function listarChats(req, res) {
           $or: [{ deletedFor: { $exists: false } }, { deletedFor: { $ne: uidObj } }],
         },
       },
-      // Campo calculado: ¿este chat es favorito para el usuario?
       { $addFields: { isFavorite: { $in: [uidObj, "$favoritesBy"] } } },
-      // Orden: favoritos primero, luego por fecha
       { $sort: { isFavorite: -1, updatedAt: -1 } },
       { $limit: 200 },
-      // Populate manual de participantes (solo campos necesarios)
       {
         $lookup: {
           from: "usuarios",
@@ -192,10 +206,10 @@ async function listarChats(req, res) {
     ];
 
     const chats = await Chat.aggregate(pipeline);
-    res.json(chats);
+    return res.json(chats);
   } catch (e) {
     console.error("listarChats:", e);
-    res.status(500).json({ mensaje: "Error al listar chats" });
+    return res.status(500).json({ mensaje: "Error al listar chats" });
   }
 }
 
@@ -206,6 +220,10 @@ async function obtenerMensajes(req, res) {
   try {
     const uid = String(req.usuario?._id || req.usuarioId || "");
     const { chatId } = req.params;
+
+    if (!isValidObjectId(chatId)) {
+      return res.status(400).json({ mensaje: "chatId inválido" });
+    }
 
     const chat = await Chat.findById(chatId);
     if (!chat) return res.status(404).json({ mensaje: "Chat no encontrado" });
@@ -218,16 +236,15 @@ async function obtenerMensajes(req, res) {
       .sort({ createdAt: 1 })
       .lean();
 
-    // Compatibilidad: si hubiera datos viejos con "reply", lo mapeamos
     const normalizados = mensajes.map((m) => {
       if (!m.replyTo && m.reply) m.replyTo = m.reply;
       return m;
     });
 
-    res.json(normalizados);
+    return res.json(normalizados);
   } catch (e) {
     console.error("obtenerMensajes:", e);
-    res.status(500).json({ mensaje: "Error al obtener mensajes" });
+    return res.status(500).json({ mensaje: "Error al obtener mensajes" });
   }
 }
 
@@ -238,6 +255,10 @@ async function eliminarParaMi(req, res) {
   try {
     const uid = getAuthUserId(req);
     const { chatId } = req.params;
+
+    if (!isValidObjectId(chatId)) {
+      return res.status(400).json({ mensaje: "chatId inválido" });
+    }
 
     const chat = await Chat.findById(chatId);
     if (!chat) return res.status(404).json({ mensaje: "Chat no encontrado" });
@@ -252,10 +273,10 @@ async function eliminarParaMi(req, res) {
       await chat.save();
     }
 
-    res.json({ ok: true });
+    return res.json({ ok: true });
   } catch (e) {
     console.error("eliminarParaMi:", e);
-    res.status(500).json({ mensaje: "Error al eliminar chat" });
+    return res.status(500).json({ mensaje: "Error al eliminar chat" });
   }
 }
 
@@ -267,6 +288,10 @@ async function toggleFavorito(req, res) {
     const uid = getAuthUserId(req);
     const uidObj = asObjectId(uid);
     const { chatId } = req.params;
+
+    if (!isValidObjectId(chatId)) {
+      return res.status(400).json({ mensaje: "chatId inválido" });
+    }
 
     const chat = await Chat.findById(chatId).select("_id participantes favoritesBy");
     if (!chat) return res.status(404).json({ mensaje: "Chat no encontrado" });
@@ -285,7 +310,7 @@ async function toggleFavorito(req, res) {
     return res.json({ ok: true, favorito: !isFav });
   } catch (e) {
     console.error("toggleFavorito:", e);
-    res.status(500).json({ mensaje: "Error al alternar favorito" });
+    return res.status(500).json({ mensaje: "Error al alternar favorito" });
   }
 }
 
@@ -295,6 +320,10 @@ async function marcarFavorito(req, res) {
     const uidObj = asObjectId(uid);
     const { chatId } = req.params;
 
+    if (!isValidObjectId(chatId)) {
+      return res.status(400).json({ mensaje: "chatId inválido" });
+    }
+
     const chat = await Chat.findById(chatId);
     if (!chat) return res.status(404).json({ mensaje: "Chat no encontrado" });
 
@@ -303,10 +332,10 @@ async function marcarFavorito(req, res) {
     }
 
     await Chat.updateOne({ _id: chatId }, { $addToSet: { favoritesBy: uidObj } });
-    res.json({ ok: true, favorito: true });
+    return res.json({ ok: true, favorito: true });
   } catch (e) {
     console.error("marcarFavorito:", e);
-    res.status(500).json({ mensaje: "Error al marcar favorito" });
+    return res.status(500).json({ mensaje: "Error al marcar favorito" });
   }
 }
 async function quitarFavorito(req, res) {
@@ -314,6 +343,10 @@ async function quitarFavorito(req, res) {
     const uid = getAuthUserId(req);
     const uidObj = asObjectId(uid);
     const { chatId } = req.params;
+
+    if (!isValidObjectId(chatId)) {
+      return res.status(400).json({ mensaje: "chatId inválido" });
+    }
 
     const chat = await Chat.findById(chatId);
     if (!chat) return res.status(404).json({ mensaje: "Chat no encontrado" });
@@ -323,10 +356,10 @@ async function quitarFavorito(req, res) {
     }
 
     await Chat.updateOne({ _id: chatId }, { $pull: { favoritesBy: uidObj } });
-    res.json({ ok: true, favorito: false });
+    return res.json({ ok: true, favorito: false });
   } catch (e) {
     console.error("quitarFavorito:", e);
-    res.status(500).json({ mensaje: "Error al quitar favorito" });
+    return res.status(500).json({ mensaje: "Error al quitar favorito" });
   }
 }
 
@@ -337,6 +370,10 @@ async function fijarMensaje(req, res) {
   try {
     const uid = getAuthUserId(req);
     const { messageId } = req.params;
+
+    if (!isValidObjectId(messageId)) {
+      return res.status(400).json({ mensaje: "messageId inválido" });
+    }
 
     const msg = await Mensaje.findById(messageId).select("_id chat");
     if (!msg) return res.status(404).json({ mensaje: "Mensaje no encontrado" });
@@ -357,16 +394,20 @@ async function fijarMensaje(req, res) {
     setPinsArray(chat, uid, next);
     await chat.save();
 
-    res.json({ ok: true, pins: next });
+    return res.json({ ok: true, pins: next });
   } catch (e) {
     console.error("fijarMensaje:", e);
-    res.status(500).json({ mensaje: "Error al fijar mensaje" });
+    return res.status(500).json({ mensaje: "Error al fijar mensaje" });
   }
 }
 async function desfijarMensaje(req, res) {
   try {
     const uid = getAuthUserId(req);
     const { messageId } = req.params;
+
+    if (!isValidObjectId(messageId)) {
+      return res.status(400).json({ mensaje: "messageId inválido" });
+    }
 
     const msg = await Mensaje.findById(messageId).select("_id chat");
     if (!msg) return res.status(404).json({ mensaje: "Mensaje no encontrado" });
@@ -384,16 +425,20 @@ async function desfijarMensaje(req, res) {
     setPinsArray(chat, uid, next);
     await chat.save();
 
-    res.json({ ok: true, pins: next });
+    return res.json({ ok: true, pins: next });
   } catch (e) {
     console.error("desfijarMensaje:", e);
-    res.status(500).json({ mensaje: "Error al desfijar mensaje" });
+    return res.status(500).json({ mensaje: "Error al desfijar mensaje" });
   }
 }
 async function obtenerPins(req, res) {
   try {
     const uid = getAuthUserId(req);
     const { chatId } = req.params;
+
+    if (!isValidObjectId(chatId)) {
+      return res.status(400).json({ mensaje: "chatId inválido" });
+    }
 
     const chat = await Chat.findById(chatId);
     if (!chat) return res.status(404).json({ mensaje: "Chat no encontrado" });
@@ -406,10 +451,10 @@ async function obtenerPins(req, res) {
     const mensajes = ids.length
       ? await Mensaje.find({ _id: { $in: ids } }).sort({ createdAt: 1 })
       : [];
-    res.json(mensajes);
+    return res.json(mensajes);
   } catch (e) {
     console.error("obtenerPins:", e);
-    res.status(500).json({ mensaje: "Error al obtener pins" });
+    return res.status(500).json({ mensaje: "Error al obtener pins" });
   }
 }
 
@@ -420,9 +465,12 @@ async function editarMensaje(req, res) {
   try {
     const uid = getAuthUserId(req);
     const { messageId } = req.params;
-    const { texto } = req.body || {};
+    const texto = sanitizeTexto((req.body || {}).texto);
 
-    if (!texto || typeof texto !== "string") {
+    if (!isValidObjectId(messageId)) {
+      return res.status(400).json({ mensaje: "messageId inválido" });
+    }
+    if (!texto) {
       return res.status(400).json({ mensaje: "Texto inválido" });
     }
 
@@ -438,10 +486,10 @@ async function editarMensaje(req, res) {
     msg.editedAt = new Date();
     await msg.save();
 
-    res.json({ ok: true, mensaje: msg });
+    return res.json({ ok: true, mensaje: msg });
   } catch (e) {
     console.error("editarMensaje:", e);
-    res.status(500).json({ mensaje: "Error al editar mensaje" });
+    return res.status(500).json({ mensaje: "Error al editar mensaje" });
   }
 }
 
@@ -449,6 +497,10 @@ async function eliminarMensaje(req, res) {
   try {
     const uid = getAuthUserId(req);
     const { messageId } = req.params;
+
+    if (!isValidObjectId(messageId)) {
+      return res.status(400).json({ mensaje: "messageId inválido" });
+    }
 
     const msg = await Mensaje.findById(messageId);
     if (!msg) return res.status(404).json({ mensaje: "Mensaje no encontrado" });
@@ -460,10 +512,10 @@ async function eliminarMensaje(req, res) {
 
     await Mensaje.deleteOne({ _id: messageId });
 
-    res.json({ ok: true });
+    return res.json({ ok: true });
   } catch (e) {
     console.error("eliminarMensaje:", e);
-    res.status(500).json({ mensaje: "Error al eliminar mensaje" });
+    return res.status(500).json({ mensaje: "Error al eliminar mensaje" });
   }
 }
 
@@ -473,20 +525,26 @@ async function eliminarMensaje(req, res) {
 async function adminListarMensajes(req, res) {
   try {
     const { chatId } = req.params;
+    if (!isValidObjectId(chatId)) {
+      return res.status(400).json({ mensaje: "chatId inválido" });
+    }
     const mensajes = await Mensaje.find({ chat: chatId }).sort({ createdAt: 1 });
-    res.json(mensajes);
+    return res.json(mensajes);
   } catch (e) {
-    res.status(500).json({ mensaje: e.message });
+    return res.status(500).json({ mensaje: "Error al listar mensajes" });
   }
 }
 async function adminEliminarChat(req, res) {
   try {
     const { chatId } = req.params;
+    if (!isValidObjectId(chatId)) {
+      return res.status(400).json({ mensaje: "chatId inválido" });
+    }
     await Mensaje.deleteMany({ chat: chatId });
     await Chat.findByIdAndDelete(chatId);
-    res.json({ ok: true });
+    return res.json({ ok: true });
   } catch (e) {
-    res.status(500).json({ mensaje: e.message });
+    return res.status(500).json({ mensaje: "Error al eliminar chat" });
   }
 }
 

@@ -1,4 +1,4 @@
-// middleware/requireAdmin.js
+// middleware/requireAdmin-1.js
 const jwt = require("jsonwebtoken");
 
 /**
@@ -9,16 +9,17 @@ const jwt = require("jsonwebtoken");
 module.exports = function requireAdmin(req, res, next) {
   // ---- API KEY (x-admin-key) ----
   const envKey = (process.env.ADMIN_API_KEY || "").trim();
-  // Postman/Navegador pueden mandar el header en minúsculas o con espacios
   const headerKey =
     (req.headers["x-admin-key"] ||
       req.headers["X-Admin-Key"] ||
       req.get?.("x-admin-key") ||
       "").toString().trim();
 
-  // Logs de diagnóstico (borra estas líneas cuando termines de probar)
-  console.log("🔍 ADMIN_API_KEY (.env) =", envKey ? "(definida)" : "(vacía)");
-  console.log("🔍 Header x-admin-key   =", headerKey || "(no enviado)");
+  // Logs de diagnóstico sólo si está habilitado
+  if (process.env.DEBUG_ADMIN === "1") {
+    console.log("🔍 ADMIN_API_KEY (.env) =", envKey ? "(definida)" : "(vacía)");
+    console.log("🔍 Header x-admin-key   =", headerKey || "(no enviado)");
+  }
 
   if (envKey && headerKey && headerKey === envKey) {
     req.admin = { method: "api-key" };
@@ -27,8 +28,8 @@ module.exports = function requireAdmin(req, res, next) {
 
   // ---- JWT (Authorization: Bearer <token>) ----
   let token = req.headers["authorization"] || "";
-  if (token.startsWith("Bearer ")) token = token.slice(7).trim();
-
+  if (typeof token === "string") token = token.trim();
+  if (token.toLowerCase().startsWith("bearer ")) token = token.slice(7).trim();
   if (!token) {
     return res.status(401).json({ error: "Admin no autorizado" });
   }

@@ -1,14 +1,24 @@
-// controllers/uploadController.js
+// controllers/uploadController-1.js
+// Endurece validaciones: bloquea SVG y no-imágenes, limita megapíxeles y maneja errores sin 500.
+// Basado en tu archivo actual.
+
 const fs = require("fs");
 const path = require("path");
 const sharp = require("sharp");
 
-// Ajustes de rendimiento de sharp
-sharp.concurrency(0); // auto = núcleos disponibles
-sharp.cache({ files: 64, items: 256, memory: 128 }); // cache moderada
+sharp.concurrency(0);
+sharp.cache({ files: 64, items: 256, memory: 128 });
 
+// Límites
+const MAX_PIXELS = Number(process.env.UPLOAD_MAX_PIXELS || 50_000_000); // 50 MP
+const FULL_SIZE = { width: 1600, height: 1600 };
+const THUMB_SIZE = { width: 320, height: 320 };
+
+// Tipos permitidos (solo imágenes seguras)
+const ALLOWED_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+// (Opcional) Moderación futura
 async function moderarImagen(_buffer) {
-  // hook de moderación (placeholder)
   return { allowed: true, reason: null };
 }
 
@@ -16,73 +26,105 @@ exports.handleUpload = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "Archivo requerido" });
 
-    const isImage = req.file.mimetype.startsWith("image/");
-    const absPath = req.file.path; // .../uploads/123_name.ext
-    const dir = path.dirname(absPath);
-    const base = path.basename(absPath, path.extname(absPath)); // 123_name
+    const mimetype = req.file.mimetype || "";
+    const isImage = mimetype.startsWith("image/");
+    const isSvg = mimetype === "image/svg+xml";
 
-    // nombres finales (webp) y thumbnail
+    const absPath = path.resolve(req.file.path);
+    const dir = path.dirname(absPath);
+    const base = path.basename(absPath, path.extname(absPath)); // nombre sin extensión
+
+    // 1) Solo imágenes
+    if (!isImage) {
+      try { fs.unlinkSync(absPath); } catch {}
+      return res.status(400).json({ error: "Solo se permiten imágenes (jpg, png, webp)" });
+    }
+    // 2) Bloquea SVG y cualquier mimetype fuera de la lista
+    if (isSvg || !ALLOWED_MIMES.has(mimetype)) {
+      try { fs.unlinkSync(absPath); } catch {}
+      return res.status(415).json({ error: "Tipo de archivo no permitido (usa JPG, PNG o WEBP)" });
+    }
+
+    // Asegura carpeta
+    try { fs.mkdirSync(dir, { recursive: true }); } catch {}
+
+    // Salidas finales (webp)
     const finalName = `${base}.webp`;
     const finalPath = path.join(dir, finalName);
     const thumbName = `${base}_sm.webp`;
     const thumbPath = path.join(dir, thumbName);
 
-    let meta = { width: null, height: null };
+    // Lee/rota/metadata de forma segura
+    const input = sharp(absPath, {
+      failOn: "none",
+      sequentialRead: true,
+      limitInputPixels: false,
+    }).rotate();
 
-    if (isImage) {
-      // Lee una vez, rota y saca metadata
-      const input = sharp(absPath, {
-        failOn: "none",
-        sequentialRead: true,          // lectura secuencial -> más rápido
-        limitInputPixels: false,
-      }).rotate();
+    const info = await input.metadata();
+    const width = info.width || null;
+    const height = info.height || null;
 
-      const info = await input.metadata();
-      meta.width = info.width || null;
-      meta.height = info.height || null;
+    // 3) Límite de megapíxeles
+    if (width && height && width * height > MAX_PIXELS) {
+      try { fs.unlinkSync(absPath); } catch {}
+      return res.status(413).json({
+        error: `Imagen demasiado grande (${width}x${height}). Límite ${Math.round(Math.sqrt(MAX_PIXELS))} px por lado aprox.`,
+      });
+    }
 
-      const buffer = await input.toBuffer();
+    // 4) Convierte a buffer (si falla, no es imagen soportada)
+    let buffer;
+    try {
+      buffer = await input.toBuffer();
+    } catch {
+      try { fs.unlinkSync(absPath); } catch {}
+      return res.status(415).json({ error: "Formato de imagen no soportado" });
+    }
 
-      const mod = await moderarImagen(buffer);
-      if (!mod.allowed) {
-        try { fs.unlinkSync(absPath); } catch {}
-        return res
-          .status(400)
-          .json({ error: "Imagen bloqueada por políticas", reason: mod.reason });
-      }
+    // 5) Moderación (placeholder)
+    const mod = await moderarImagen(buffer);
+    if (!mod.allowed) {
+      try { fs.unlinkSync(absPath); } catch {}
+      return res.status(400).json({ error: "Imagen bloqueada por políticas", reason: mod.reason });
+    }
 
-      // Procesa en paralelo: grande + thumb
+    // 6) Procesado (full + thumb)
+    try {
       await Promise.all([
         sharp(buffer, { sequentialRead: true })
-          .resize({ width: 1600, height: 1600, fit: "inside", withoutEnlargement: true })
-          .webp({ quality: 80, effort: 2 }) // effort bajo = más rápido, calidad buena
+          .resize({ ...FULL_SIZE, fit: "inside", withoutEnlargement: true })
+          .webp({ quality: 80, effort: 2 })
           .toFile(finalPath),
-
         sharp(buffer, { sequentialRead: true })
-          .resize({ width: 320, height: 320, fit: "inside", withoutEnlargement: true })
+          .resize({ ...THUMB_SIZE, fit: "inside", withoutEnlargement: true })
           .webp({ quality: 78, effort: 2 })
           .toFile(thumbPath),
       ]);
-
-      // borra el original de multer
+    } catch {
       try { fs.unlinkSync(absPath); } catch {}
-    } else {
-      // No-imagen: deja el archivo como llegó
-      return res.status(400).json({ error: "Solo se permiten imágenes" });
+      return res.status(415).json({ error: "No se pudo procesar la imagen" });
     }
 
-    const payload = {
+    // Limpia el original temporal
+    try { fs.unlinkSync(absPath); } catch {}
+
+    // Tamaño final
+    let size = null;
+    try { size = fs.statSync(finalPath).size; } catch {}
+
+    return res.json({
       filename: req.file.originalname,
       url: `/uploads/${finalName}`,
       thumbUrl: `/uploads/${thumbName}`,
       mimeType: "image/webp",
-      size: fs.statSync(finalPath).size,
-      isImage,
-      ...meta,
-    };
-
-    return res.json(payload);
+      size,
+      isImage: true,
+      width,
+      height,
+    });
   } catch (e) {
-    return res.status(500).json({ error: e.message });
+    const message = process.env.NODE_ENV === "development" ? (e?.message || "Error") : "Error del servidor";
+    return res.status(500).json({ error: message });
   }
 };

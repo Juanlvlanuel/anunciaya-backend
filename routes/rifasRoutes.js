@@ -1,22 +1,63 @@
-// ✅ routes/rifasRoutes.js
+// routes/rifasRoutes-1.js
 const express = require("express");
 const router = express.Router();
 const Rifas = require("../models/Rifas");
 
+// 🔒 Rate limiting simple en memoria (por proceso)
+const rateLimit = ({ windowMs = 60_000, max = 10 } = {}) => {
+  const hits = new Map(); // key -> { count, expires }
+  return (req, res, next) => {
+    const key = (req.ip || req.connection?.remoteAddress || "unknown") + "|" + (req.baseUrl + req.path);
+    const now = Date.now();
+    const rec = hits.get(key);
+    if (!rec || rec.expires < now) {
+      hits.set(key, { count: 1, expires: now + windowMs });
+      return next();
+    }
+    if (rec.count >= max) {
+      const retryAfter = Math.ceil((rec.expires - now) / 1000);
+      res.setHeader("Retry-After", retryAfter);
+      return res.status(429).json({ error: "Demasiadas solicitudes, intenta más tarde." });
+    }
+    rec.count += 1;
+    return next();
+  };
+};
+
+// Seguridad básica
+router.use((req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  next();
+});
+
+router.use(express.json({ limit: "1.5mb" }));
+router.use((req, res, next) => {
+  const method = (req.method || "").toUpperCase();
+  if (["POST","PUT","PATCH"].includes(method)) {
+    const ct = (req.headers["content-type"] || "").toLowerCase();
+    if (!ct.includes("application/json")) {
+      return res.status(415).json({ mensaje: "Content-Type debe ser application/json" });
+    }
+  }
+  next();
+});
+
 // 📌 POST: Crear una nueva rifa
-router.post("/", async (req, res) => {
+router.post("/", rateLimit({ windowMs: 60_000, max: 20 }), async (req, res) => {
   try {
     const nuevaRifa = new Rifas(req.body);
     await nuevaRifa.save();
     res.status(201).json({ mensaje: "Rifa creada correctamente", rifa: nuevaRifa });
   } catch (error) {
     console.error("❌ Error al crear la rifa:", error);
-    res.status(500).json({ mensaje: "Error al crear la rifa", error });
+    res.status(500).json({ mensaje: "Error al crear la rifa" });
   }
 });
 
 // 📌 GET: Rifas locales (con coordenadas)
-router.get("/local", async (req, res) => {
+router.get("/local", rateLimit({ windowMs: 60_000, max: 60 }), async (req, res) => {
   const { lat, lng } = req.query;
 
   if (!lat || !lng) {
@@ -39,12 +80,12 @@ router.get("/local", async (req, res) => {
     res.json(rifasCercanas);
   } catch (error) {
     console.error("❌ Error al buscar rifas:", error);
-    res.status(500).json({ mensaje: "Error al obtener rifas cercanas", error });
+    res.status(500).json({ mensaje: "Error al obtener rifas cercanas" });
   }
 });
 
 // ✅ Eliminar una rifa por ID
-router.delete("/:id", async (req, res) => {
+router.delete("/:id", rateLimit({ windowMs: 60_000, max: 20 }), async (req, res) => {
   try {
     const rifaEliminada = await Rifas.findByIdAndDelete(req.params.id);
     if (!rifaEliminada) {
@@ -57,6 +98,4 @@ router.delete("/:id", async (req, res) => {
   }
 });
 
-
 module.exports = router;
-
