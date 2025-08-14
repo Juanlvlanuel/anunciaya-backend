@@ -8,13 +8,16 @@ const { OAuth2Client } = require("google-auth-library");
 const { google } = require("googleapis");
 const { Types } = require("mongoose");
 
-// Soporta múltiples Client IDs (dev/prod)
-const CLIENT_ID_MAIN = process.env.GOOGLE_CLIENT_ID || "";
-const CLIENT_ID_DEV = process.env.GOOGLE_CLIENT_ID_DEV || "";
-const CLIENT_ID_PROD = process.env.GOOGLE_CLIENT_ID_PROD || "";
-const GOOGLE_AUDIENCES = [CLIENT_ID_MAIN, CLIENT_ID_DEV, CLIENT_ID_PROD].filter(Boolean);
+// Normaliza variables de entorno para Google OAuth
+const CLIENT_ID =
+  process.env.GOOGLE_CLIENT_ID ||
+  process.env.CLIENT_ID_PROD ||
+  process.env.CLIENT_ID_MAIN;
 
-const client = new OAuth2Client(CLIENT_ID_MAIN || CLIENT_ID_DEV || CLIENT_ID_PROD);
+const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+
+const REDIRECT_URI =
+  "https://anunciaya-backend-production.up.railway.app/api/usuarios/auth/google/callback";
 
 /* ===================== Helpers ===================== */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -362,9 +365,9 @@ const iniciarGoogleOAuth = (req, res) => {
     res.cookie(STATE_COOKIE, state, stateCookieOpts);
 
     const oauth2Client = new google.auth.OAuth2(
-      CLIENT_ID_PROD || CLIENT_ID_MAIN,
-      process.env.GOOGLE_CLIENT_SECRET,
-      "https://anunciaya-backend-production.up.railway.app/api/usuarios/auth/google/callback"
+      CLIENT_ID,
+      CLIENT_SECRET,
+      REDIRECT_URI
     );
 
     const url = oauth2Client.generateAuthUrl({
@@ -399,10 +402,11 @@ const googleCallbackHandler = async (req, res) => {
     if (!code) return res.status(400).send("Código de Google no recibido");
 
     const oauth2Client = new google.auth.OAuth2(
-      CLIENT_ID_PROD || CLIENT_ID_MAIN,
-      process.env.GOOGLE_CLIENT_SECRET,
-      "https://anunciaya-backend-production.up.railway.app/api/usuarios/auth/google/callback"
+      CLIENT_ID,
+      CLIENT_SECRET,
+      REDIRECT_URI
     );
+
 
     const { tokens } = await oauth2Client.getToken(code);
     oauth2Client.setCredentials(tokens);
