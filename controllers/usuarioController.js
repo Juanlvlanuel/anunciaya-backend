@@ -348,7 +348,7 @@ const stateCookieOpts = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
   sameSite: "lax",
-  path: "/auth/google/callback",
+  path: "/api/usuarios/auth/google/callback", // ⬅️ usar la ruta real del callback
   maxAge: 5 * 60 * 1000, // 5 minutos
 };
 
