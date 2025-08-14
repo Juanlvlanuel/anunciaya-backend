@@ -407,7 +407,8 @@ const googleCallbackHandler = async (req, res) => {
       REDIRECT_URI
     );
 
-
+    console.log("[OAUTH] Using redirect:", REDIRECT_URI);
+    
     const { tokens } = await oauth2Client.getToken(code);
     oauth2Client.setCredentials(tokens);
 
@@ -433,10 +434,19 @@ const googleCallbackHandler = async (req, res) => {
       `https://anunciaya-frontend.vercel.app/?googleToken=${token}`
     );
   } catch (error) {
-    if (process.env.NODE_ENV !== "production") {
-      console.error("❌ Error en Google Callback:", error?.message || error);
-    }
-    return res.status(500).send("Error en autenticación con Google");
+    // LOG detallado en server y respuesta temporal con el motivo
+    console.error("❌ Google Callback error:",
+      error?.response?.data || error?.message || error);
+
+    return res
+      .status(500)
+      .send(
+        "Google callback error: " +
+        (error?.response?.data?.error_description ||
+          error?.response?.data?.error ||
+          error?.message ||
+          "desconocido")
+      );
   }
 };
 
