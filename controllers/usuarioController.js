@@ -24,12 +24,16 @@ const REDIRECT_URI =
   process.env.GOOGLE_CALLBACK_URL_PROD ||
   "https://anunciaya-backend-production.up.railway.app/api/usuarios/auth/google/callback";
 
+// Audience permitido (mismo CLIENT_ID del front)
+const GOOGLE_AUDIENCES = [CLIENT_ID].filter(Boolean);
+const client = new OAuth2Client(CLIENT_ID);
+
 /* ===================== Helpers ===================== */
-const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_RE = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;
 const norm = (v) => (v ?? "").toString().trim();
 const normEmail = (v) => norm(v).toLowerCase();
 const isValidObjectId = (id) => Types.ObjectId.isValid(String(id || ""));
-const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
 
 /* Colecta y normaliza tipo/perfil */
 const extractTipoPerfil = (raw) => {
@@ -43,7 +47,7 @@ const extractTipoPerfil = (raw) => {
   }
 
   if (typeof p === "string") p = p.trim();
-  if (typeof p === "string" && /^\d+$/.test(p)) p = Number(p);
+  if (typeof p === "string" && /^\\d+$/.test(p)) p = Number(p);
 
   if (p == null || p === "") p = 1;
   if (!t) t = "usuario";
@@ -52,7 +56,7 @@ const extractTipoPerfil = (raw) => {
 };
 
 const normalizePerfilToSchema = (valor) => {
-  if (typeof valor === "string" && /^\d+$/.test(valor)) return Number(valor);
+  if (typeof valor === "string" && /^\\d+$/.test(valor)) return Number(valor);
   return valor;
 };
 
@@ -466,8 +470,8 @@ const searchUsuarios = async (req, res) => {
 
     if (!q) return res.json([]);
 
-    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(escaped.split(/\s+/).join(".*"), "i");
+    const escaped = q.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
+    const regex = new RegExp(escaped.split(/\\s+/).join(".*"), "i");
 
     const filter = {
       $and: [
