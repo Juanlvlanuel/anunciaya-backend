@@ -35,7 +35,11 @@ module.exports = function requireAdmin(req, res, next) {
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const options = {};
+    if (process.env.JWT_ISS) options.issuer = process.env.JWT_ISS;
+    if (process.env.JWT_AUD) options.audience = process.env.JWT_AUD;
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, options);
     if (decoded && (decoded.role === "admin" || decoded.isAdmin === true)) {
       req.admin = { method: "jwt", ...decoded };
       return next();

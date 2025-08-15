@@ -1,14 +1,17 @@
-// ✅ helpers/generarJWT-1.js
+// helpers/generarJWT-1.js
 const jwt = require("jsonwebtoken");
 
 /**
- * Genera un JWT con uid, respetando configuración de .env para expiración, issuer y audience.
- * Mantiene compatibilidad con la lógica actual.
+ * Genera un JWT con uid respetando configuración del .env.
+ * Ahora valida explícitamente que JWT_SECRET exista.
  */
 const generarJWT = (uid) => {
   return new Promise((resolve, reject) => {
-    const payload = { uid };
+    if (!process.env.JWT_SECRET) {
+      return reject(new Error("JWT_SECRET no está definido en el entorno"));
+    }
 
+    const payload = { uid };
     const signOptions = {
       expiresIn: process.env.JWT_EXPIRES_IN || "30d",
     };
@@ -17,11 +20,8 @@ const generarJWT = (uid) => {
     if (process.env.JWT_AUD) signOptions.audience = process.env.JWT_AUD;
 
     jwt.sign(payload, process.env.JWT_SECRET, signOptions, (err, token) => {
-      if (err) {
-        reject("No se pudo generar el token");
-      } else {
-        resolve(token);
-      }
+      if (err) return reject(err);
+      resolve(token);
     });
   });
 };

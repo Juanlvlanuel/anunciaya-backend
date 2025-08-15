@@ -12,7 +12,11 @@ module.exports = async (req, res, next) => {
   else if (token.toLowerCase().startsWith("token ")) token = token.slice(6).trim();
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const options = {};
+    if (process.env.JWT_ISS) options.issuer = process.env.JWT_ISS;
+    if (process.env.JWT_AUD) options.audience = process.env.JWT_AUD;
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET, options);
     const usuarioId = decoded?.uid || decoded?.id || decoded?._id;
     if (!usuarioId) return res.status(401).json({ mensaje: "Token inválido" });
 

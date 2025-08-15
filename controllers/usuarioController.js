@@ -8,6 +8,18 @@ const { OAuth2Client } = require("google-auth-library");
 const { google } = require("googleapis");
 const { Types } = require("mongoose");
 
+// === NUEVO: helpers access/refresh (añadidos sin borrar lógica actual) ===
+const { signAccess, signRefresh } = require("../helpers/tokens");
+const setRefreshCookie = (res, token) => {
+  res.cookie(process.env.REFRESH_COOKIE_NAME || "rtid", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    path: "/api/usuarios/auth/refresh",
+    maxAge: 1000 * 60 * 60 * 24 * 30, // 30 días
+  });
+};
+
 // === Google OAuth env ===
 const CLIENT_ID =
   process.env.GOOGLE_CLIENT_ID ||
@@ -29,16 +41,16 @@ const GOOGLE_AUDIENCES = [CLIENT_ID].filter(Boolean);
 const client = new OAuth2Client(CLIENT_ID);
 
 /* ===================== Helpers ===================== */
-const EMAIL_RE = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const norm = (v) => (v ?? "").toString().trim();
 const normEmail = (v) => norm(v).toLowerCase();
 const isValidObjectId = (id) => Types.ObjectId.isValid(String(id || ""));
-const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /* Colecta y normaliza tipo/perfil */
 const extractTipoPerfil = (raw) => {
   let t = norm(raw?.tipo);
-  let p = raw?.perfil;
+  let p = norm(raw?.perfil);
 
   if (p && typeof p === "object" && "perfil" in p) p = p.perfil;
 
@@ -47,7 +59,7 @@ const extractTipoPerfil = (raw) => {
   }
 
   if (typeof p === "string") p = p.trim();
-  if (typeof p === "string" && /^\\d+$/.test(p)) p = Number(p);
+  if (typeof p === "string" && /^\d+$/.test(p)) p = Number(p);
 
   if (p == null || p === "") p = 1;
   if (!t) t = "usuario";
@@ -56,7 +68,7 @@ const extractTipoPerfil = (raw) => {
 };
 
 const normalizePerfilToSchema = (valor) => {
-  if (typeof valor === "string" && /^\\d+$/.test(valor)) return Number(valor);
+  if (typeof valor === "string" && /^\d+$/.test(valor)) return Number(valor);
   return valor;
 };
 
@@ -109,11 +121,17 @@ const registrarUsuario = async (req, res) => {
     });
 
     await nuevoUsuario.save();
-    const token = await generarJWT(nuevoUsuario._id);
+
+    // === NUEVO: emitir access + refresh (sin borrar tu generateJWT import) ===
+    let access;
+    try { access = signAccess(nuevoUsuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
+    let refresh;
+    try { const tmp = await signRefresh(nuevoUsuario._id); refresh = tmp.refresh; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
+    setRefreshCookie(res, refresh);
 
     return res.status(200).json({
       mensaje: "Registro Exitoso",
-      token,
+      token: access,
       usuario: {
         _id: nuevoUsuario._id,
         nombre: nuevoUsuario.nombre,
@@ -204,9 +222,15 @@ const loginUsuario = async (req, res) => {
       await usuario.save({ validateModifiedOnly: true });
     }
 
-    const token = await generarJWT(usuario._id);
+    // === NUEVO: emitir access + refresh (en vez de generarJWT) ===
+    let access;
+    try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
+    let refresh;
+    try { const tmp = await signRefresh(usuario._id); refresh = tmp.refresh; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
+    setRefreshCookie(res, refresh);
+
     const usuarioLimpio = usuario.toJSON ? usuario.toJSON() : usuario;
-    return res.json({ token, usuario: usuarioLimpio });
+    return res.json({ token: access, usuario: usuarioLimpio });
   } catch (error) {
     if (process.env.NODE_ENV !== "production") {
       console.error("❌ Error en login:", error);
@@ -300,9 +324,15 @@ const autenticarConGoogle = async (req, res) => {
     let usuario = await Usuario.findOne({ correo: correoCI });
 
     if (usuario) {
-      const token = await generarJWT(usuario._id);
+      // === NUEVO: emitir access + refresh ===
+      let access;
+    try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
+      let refresh;
+    try { const tmp = await signRefresh(usuario._id); refresh = tmp.refresh; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
+      setRefreshCookie(res, refresh);
+
       return res.status(200).json({
-        token,
+        token: access,
         usuario: {
           _id: usuario._id,
           nombre: usuario.nombre,
@@ -330,11 +360,16 @@ const autenticarConGoogle = async (req, res) => {
     });
     await usuario.save();
 
-    const token = await generarJWT(usuario._id);
+    // === NUEVO: emitir access + refresh ===
+    let access;
+    try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
+    let refresh;
+    try { const tmp = await signRefresh(usuario._id); refresh = tmp.refresh; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
+    setRefreshCookie(res, refresh);
 
     return res.status(200).json({
       mensaje: "Registro y Login con Google Exitoso",
-      token,
+      token: access,
       usuario: {
         _id: usuario._id,
         nombre: usuario.nombre,
@@ -437,10 +472,15 @@ const googleCallbackHandler = async (req, res) => {
       );
     }
 
-    const token = await generarJWT(usuario._id);
+    // === NUEVO: emitir access + refresh (antes del redirect) ===
+    let access;
+    try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
+    let refresh;
+    try { const tmp = await signRefresh(usuario._id); refresh = tmp.refresh; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
+    setRefreshCookie(res, refresh);
 
     return res.redirect(
-      `https://anunciaya-frontend.vercel.app/?googleToken=${token}`
+      `https://anunciaya-frontend.vercel.app/?googleToken=${access}`
     );
   } catch (error) {
     // LOG detallado en server y respuesta temporal con el motivo
@@ -470,8 +510,8 @@ const searchUsuarios = async (req, res) => {
 
     if (!q) return res.json([]);
 
-    const escaped = q.replace(/[.*+?^${}()|[\\]\\\\]/g, "\\\\$&");
-    const regex = new RegExp(escaped.split(/\\s+/).join(".*"), "i");
+    const escaped = q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(escaped.split(/\s+/).join(".*"), "i");
 
     const filter = {
       $and: [

@@ -5,6 +5,7 @@ const http = require("http");
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser"); // ✅ añadido
+const helmet = require("helmet");
 const { Server: SocketIOServer } = require("socket.io");
 
 // DB + rutas
@@ -33,6 +34,9 @@ const server = http.createServer(app);
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
 
+// Helmet: cabeceras de seguridad
+app.use(helmet({ crossOriginResourcePolicy: false }));
+
 // ----- CORS (REST + WS) -----
 const defaultAllowed = [
   "http://localhost:5173",
@@ -60,6 +64,12 @@ app.use(cors({
 }));
 
 app.use(cookieParser()); // ✅ necesario para leer req.cookies (state CSRF)
+
+// Exponer cabeceras para el frontend si las necesitas
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Expose-Headers", "Content-Length, X-Request-Id");
+  next();
+});
 
 // 🔒 JSON body limit global
 app.use(express.json({ limit: "5mb" }));
