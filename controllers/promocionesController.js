@@ -1,6 +1,6 @@
 // controllers/promocionesController-1.js
-// Basado en tu archivo original, con validaciones de entrada, comprobación de ObjectId,
-// sanitización ligera y manejo de errores uniforme, sin cambiar la lógica de negocio.
+// Refuerzo: usa el usuario autenticado (token) para reacciones/guardados.
+// Valida ObjectId y mantiene respuestas claras sin exponer detalles internos.
 const { Types } = require("mongoose");
 const Oferta = require("../models/Oferta");
 
@@ -9,7 +9,9 @@ const ALLOWED_REACTIONS = new Set(["like", "love"]);
 function isValidObjectId(id) {
   return Types.ObjectId.isValid(String(id || ""));
 }
-
+function authUid(req) {
+  return String(req.usuario?._id || req.usuarioId || "");
+}
 function safeErr(error) {
   return process.env.NODE_ENV === "development" ? String(error && error.message) : undefined;
 }
@@ -17,15 +19,14 @@ function safeErr(error) {
 // 🔸 Agregar o alternar reacción (like/love)
 const reaccionarPromocion = async (req, res) => {
   const { id } = req.params;
-  const usuarioId = (req.body?.usuarioId || "").toString();
+  const uid = authUid(req);
   const tipo = (req.body?.tipo || "").toString().toLowerCase();
 
-  // Validaciones básicas
   if (!isValidObjectId(id)) {
     return res.status(400).json({ mensaje: "ID de promoción inválido" });
   }
-  if (!isValidObjectId(usuarioId)) {
-    return res.status(400).json({ mensaje: "ID de usuario inválido" });
+  if (!uid || !isValidObjectId(uid)) {
+    return res.status(401).json({ mensaje: "No autenticado" });
   }
   if (!ALLOWED_REACTIONS.has(tipo)) {
     return res.status(400).json({ mensaje: "Tipo de reacción no válido" });
@@ -35,6 +36,7 @@ const reaccionarPromocion = async (req, res) => {
     const oferta = await Oferta.findById(id);
     if (!oferta) return res.status(404).json({ mensaje: "Promoción no encontrada" });
 
+    const usuarioId = uid;
     const existente = (oferta.likes || []).find((r) => String(r.usuario) === usuarioId);
     if (existente) {
       if (existente.tipo === tipo) {
@@ -57,13 +59,13 @@ const reaccionarPromocion = async (req, res) => {
 // 🔸 Guardar o desguardar promoción
 const guardarPromocion = async (req, res) => {
   const { id } = req.params;
-  const usuarioId = (req.body?.usuarioId || "").toString();
+  const uid = authUid(req);
 
   if (!isValidObjectId(id)) {
     return res.status(400).json({ mensaje: "ID de promoción inválido" });
   }
-  if (!isValidObjectId(usuarioId)) {
-    return res.status(400).json({ mensaje: "ID de usuario inválido" });
+  if (!uid || !isValidObjectId(uid)) {
+    return res.status(401).json({ mensaje: "No autenticado" });
   }
 
   try {
@@ -71,12 +73,12 @@ const guardarPromocion = async (req, res) => {
     if (!oferta) return res.status(404).json({ mensaje: "Promoción no encontrada" });
 
     const arr = oferta.guardados || [];
-    const yaGuardado = arr.some((u) => String(u) === usuarioId);
+    const yaGuardado = arr.some((u) => String(u) === String(uid));
 
     if (yaGuardado) {
-      oferta.guardados = arr.filter((u) => String(u) !== usuarioId);
+      oferta.guardados = arr.filter((u) => String(u) !== String(uid));
     } else {
-      oferta.guardados = [...arr, usuarioId];
+      oferta.guardados = [...arr, uid];
     }
 
     await oferta.save();
@@ -86,7 +88,7 @@ const guardarPromocion = async (req, res) => {
   }
 };
 
-// 🔸 Aumentar visualización (una por visita)
+// 🔸 Aumentar visualización (una por visita) — público
 const contarVisualizacion = async (req, res) => {
   const { id } = req.params;
 
@@ -103,7 +105,7 @@ const contarVisualizacion = async (req, res) => {
   }
 };
 
-// 🔸 Obtener detalles de una promoción
+// 🔸 Obtener detalles de una promoción — público
 const obtenerPromocionPorId = async (req, res) => {
   const { id } = req.params;
 

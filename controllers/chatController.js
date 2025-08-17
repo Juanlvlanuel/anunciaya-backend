@@ -1,5 +1,4 @@
-// controllers/chatController-1.js
-// Basado en tu archivo original, con validaciones y manejo de errores uniforme.
+// controllers/chatController.js — PATCH Bloquear/Desbloquear + isBlocked + sort por ultimoMensajeAt
 const Chat = require("../models/Chat");
 const Mensaje = require("../models/Mensaje");
 const Usuario = require("../models/Usuario");
@@ -63,6 +62,7 @@ function setPinsArray(chat, uid, arr) {
 ========================= */
 async function ensurePrivado(req, res) {
   try {
+    let __created = false;
     const me = asObjectId(getAuthUserId(req));
     let { usuarioAId, usuarioBId, anuncioId } = req.body || {};
 
@@ -115,21 +115,9 @@ async function ensurePrivado(req, res) {
 
     // Crear si no existe
     if (!chat) {
-      // (conserva tu bloque de restauración redundante aunque aquí no aplica)
-      if (chat && Array.isArray(chat.deletedFor)) {
-        const meStr = String(me);
-        const hasMe = chat.deletedFor.some((x) => String(x) == meStr);
-        if (hasMe) {
-          chat.deletedFor = chat.deletedFor.filter((x) => String(x) != meStr);
-          await chat.save();
-          chat = await Chat.findById(chat._id).populate(
-            "participantes",
-            "_id nombre nickname correo fotoPerfil tipo"
-          );
-        }
-      }
-
-      chat = await Chat.create({
+      
+      __created = true;
+chat = await Chat.create({
         tipo: "privado",
         participantes: [me, other],
         anuncioId: anuncioId ? asObjectId(anuncioId) : null,
@@ -140,7 +128,7 @@ async function ensurePrivado(req, res) {
       );
     }
 
-    return res.json(chat);
+    return res.status(__created ? 201 : 200).json(chat);
   } catch (e) {
     console.error("ensurePrivado:", e);
     return res.status(500).json({ mensaje: "Error al crear/obtener chat" });
@@ -150,11 +138,11 @@ async function ensurePrivado(req, res) {
 /* =========================
    Listar chats (favoritos arriba)
 ========================= */
+// controllers/chatController.js
 async function listarChats(req, res) {
   try {
     const uid = getAuthUserId(req);
     if (!uid) return res.status(401).json({ mensaje: "No autenticado" });
-
     const uidObj = asObjectId(uid);
 
     const pipeline = [
@@ -164,12 +152,26 @@ async function listarChats(req, res) {
           $or: [{ deletedFor: { $exists: false } }, { deletedFor: { $ne: uidObj } }],
         },
       },
-      { $addFields: { isFavorite: { $in: [uidObj, "$favoritesBy"] } } },
-      { $sort: { isFavorite: -1, updatedAt: -1 } },
+
+      // Normaliza arrays para evitar $in con null
+      { $addFields: {
+          _favoritesBySafe: { $ifNull: ["$favoritesBy", []] },
+          _blockedBySafe:   { $ifNull: ["$blockedBy",   []] },
+        }
+      },
+      { $addFields: {
+          isFavorite: { $in: [uidObj, "$_favoritesBySafe"] },
+          isBlocked:  { $in: [uidObj, "$_blockedBySafe"] },
+        }
+      },
+
+      // Orden por actividad (favoritos arriba)
+      { $sort: { isFavorite: -1, ultimoMensajeAt: -1, updatedAt: -1 } },
       { $limit: 200 },
+
       {
         $lookup: {
-          from: "usuarios",
+          from: "usuarios",               // colección de Usuario
           localField: "participantes",
           foreignField: "_id",
           as: "participantes",
@@ -194,6 +196,7 @@ async function listarChats(req, res) {
           },
           anuncioId: 1,
           favoritesBy: 1,
+          blockedBy: 1,
           deletedFor: 1,
           pinsByUser: 1,
           ultimoMensaje: 1,
@@ -201,6 +204,7 @@ async function listarChats(req, res) {
           createdAt: 1,
           updatedAt: 1,
           isFavorite: 1,
+          isBlocked: 1,
         },
       },
     ];
@@ -208,10 +212,12 @@ async function listarChats(req, res) {
     const chats = await Chat.aggregate(pipeline);
     return res.json(chats);
   } catch (e) {
-    console.error("listarChats:", e);
+    // Loguea el error real para que lo veas en consola del server
+    console.error("[listarChats] ERROR:", e?.message, e);
     return res.status(500).json({ mensaje: "Error al listar chats" });
   }
 }
+
 
 /* =========================
    Obtener mensajes
@@ -520,31 +526,47 @@ async function eliminarMensaje(req, res) {
 }
 
 /* =========================
-   Admin (si los usas)
+   BLOQUEAR / DESBLOQUEAR
 ========================= */
-async function adminListarMensajes(req, res) {
+async function bloquearParaMi(req, res) {
   try {
+    const uid = asObjectId(getAuthUserId(req));
     const { chatId } = req.params;
-    if (!isValidObjectId(chatId)) {
-      return res.status(400).json({ mensaje: "chatId inválido" });
+
+    if (!isValidObjectId(chatId)) return res.status(400).json({ mensaje: "chatId inválido" });
+    const chat = await Chat.findById(chatId).select("_id participantes blockedBy");
+    if (!chat) return res.status(404).json({ mensaje: "Chat no encontrado" });
+
+    if (!toIdStrings(chat.participantes).includes(String(uid))) {
+      return res.status(403).json({ mensaje: "No autorizado" });
     }
-    const mensajes = await Mensaje.find({ chat: chatId }).sort({ createdAt: 1 });
-    return res.json(mensajes);
+
+    await Chat.updateOne({ _id: chatId }, { $addToSet: { blockedBy: uid } });
+    return res.json({ ok: true, bloqueado: true });
   } catch (e) {
-    return res.status(500).json({ mensaje: "Error al listar mensajes" });
+    console.error("bloquearParaMi:", e);
+    return res.status(500).json({ mensaje: "Error al bloquear" });
   }
 }
-async function adminEliminarChat(req, res) {
+
+async function desbloquearParaMi(req, res) {
   try {
+    const uid = asObjectId(getAuthUserId(req));
     const { chatId } = req.params;
-    if (!isValidObjectId(chatId)) {
-      return res.status(400).json({ mensaje: "chatId inválido" });
+
+    if (!isValidObjectId(chatId)) return res.status(400).json({ mensaje: "chatId inválido" });
+    const chat = await Chat.findById(chatId).select("_id participantes blockedBy");
+    if (!chat) return res.status(404).json({ mensaje: "Chat no encontrado" });
+
+    if (!toIdStrings(chat.participantes).includes(String(uid))) {
+      return res.status(403).json({ mensaje: "No autorizado" });
     }
-    await Mensaje.deleteMany({ chat: chatId });
-    await Chat.findByIdAndDelete(chatId);
-    return res.json({ ok: true });
+
+    await Chat.updateOne({ _id: chatId }, { $pull: { blockedBy: uid } });
+    return res.json({ ok: true, bloqueado: false });
   } catch (e) {
-    return res.status(500).json({ mensaje: "Error al eliminar chat" });
+    console.error("desbloquearParaMi:", e);
+    return res.status(500).json({ mensaje: "Error al desbloquear" });
   }
 }
 
@@ -564,7 +586,10 @@ module.exports = {
   // mensajes
   editarMensaje,
   eliminarMensaje,
-  // admin
-  adminListarMensajes,
-  adminEliminarChat,
+  // bloqueo
+  bloquearParaMi,
+  desbloquearParaMi,
+  // admin (si los usas)
+  // adminListarMensajes,
+  // adminEliminarChat,
 };

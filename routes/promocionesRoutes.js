@@ -1,6 +1,8 @@
 // routes/promocionesRoutes-1.js
 const express = require("express");
 const router = express.Router();
+const verificarToken = require("../middleware/verificarToken");
+
 const {
   reaccionarPromocion,
   guardarPromocion,
@@ -50,16 +52,16 @@ router.use((req, res, next) => {
   next();
 });
 
-// Reaccionar a una promoción (like/love)
-router.post("/:id/reaccion", rateLimit({ windowMs: 60_000, max: 60 }), reaccionarPromocion);
+// Reaccionar a una promoción (like/love) — requiere token (evita suplantación)
+router.post("/:id/reaccion", verificarToken, rateLimit({ windowMs: 60_000, max: 60 }), reaccionarPromocion);
 
-// Guardar/desguardar promoción
-router.post("/:id/guardar", rateLimit({ windowMs: 60_000, max: 60 }), guardarPromocion);
+// Guardar/desguardar promoción — requiere token
+router.post("/:id/guardar", verificarToken, rateLimit({ windowMs: 60_000, max: 60 }), guardarPromocion);
 
-// Contar visualización
+// Contar visualización — público (no requiere token)
 router.post("/:id/visualizar", rateLimit({ windowMs: 60_000, max: 120 }), contarVisualizacion);
 
-// Ver detalles completos de una promoción
+// Ver detalles completos de una promoción — público
 router.get("/:id", rateLimit({ windowMs: 60_000, max: 120 }), obtenerPromocionPorId);
 
 module.exports = router;

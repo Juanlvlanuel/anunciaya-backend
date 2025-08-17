@@ -1,7 +1,6 @@
-// routes/uploadRoutes-fixed.js
+// routes/uploadRoutes-1.js
 // Ruta de subida endurecida: usa el controlador reforzado, bloquea tipos no permitidos
-// y devuelve 400/415 claros (evita 500).
-// Copia este archivo como routes/uploadRoutes.js en tu proyecto.
+// y devuelve 400/415/405 claros (evita 500).
 
 const express = require("express");
 const path = require("path");
@@ -33,8 +32,7 @@ const ALLOWED = new Set(["image/jpeg", "image/png", "image/webp"]);
 // Filtro de archivo: NO lanzar error; marcar razón y rechazar suavemente
 const fileFilter = (req, file, cb) => {
   if (ALLOWED.has(file.mimetype)) return cb(null, true);
-  req.fileValidationError =
-    "Tipo de archivo no permitido (usa JPG, PNG o WEBP)";
+  req.fileValidationError = "Tipo de archivo no permitido (usa JPG, PNG o WEBP)";
   return cb(null, false);
 };
 
@@ -45,8 +43,15 @@ const upload = multer({
   limits: { fileSize: 15 * 1024 * 1024 },
 });
 
-// Controlador reforzado (el que te pasé)
+// Controlador reforzado
 const { handleUpload } = require("../controllers/uploadController");
+
+// Seguridad básica de cabeceras
+router.use((req, res, next) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  next();
+});
 
 // Endpoint: POST /api/upload/single
 router.post("/single", (req, res, next) => {
@@ -57,9 +62,7 @@ router.post("/single", (req, res, next) => {
     }
     // Otros errores del middleware
     if (err) {
-      return res
-        .status(415)
-        .json({ error: "Tipo de archivo no permitido (usa JPG, PNG o WEBP)" });
+      return res.status(415).json({ error: "Tipo de archivo no permitido (usa JPG, PNG o WEBP)" });
     }
     // Rechazo del fileFilter o falta de archivo
     if (!req.file) {
@@ -70,6 +73,14 @@ router.post("/single", (req, res, next) => {
     // OK: pasa al controlador
     return handleUpload(req, res, next);
   });
+});
+
+// 405 para métodos no permitidos en /single
+router.all("/single", (req, res) => {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Método no permitido" });
+  }
+  return res.status(404).json({ error: "No encontrado" });
 });
 
 module.exports = router;

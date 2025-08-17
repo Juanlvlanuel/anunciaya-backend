@@ -95,4 +95,4 @@ const revokeFamily = async (family) => {
   return { n: 0 };
 };
 
-module.exports = { signAccess, signRefresh, revokeFamily };
+module.exports = { signAccess, signRefresh, revokeFamily, hashToken };

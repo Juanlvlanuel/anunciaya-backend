@@ -6,20 +6,21 @@ const { Schema } = mongoose;
  * Modelo de chat 1:1 o grupal.
  * Incluye favoritos por usuario (favoritesBy),
  * eliminación “para mí” (deletedFor),
- * y mensajes fijados por usuario (pinsByUser).
+ * mensajes fijados por usuario (pinsByUser),
+ * y bloqueo por usuario (blockedBy).
  */
 const ChatSchema = new Schema(
   {
     tipo: { type: String, enum: ["privado", "grupo"], default: "privado" },
 
-    // Participantes: usamos siempre este arreglo (el legacy usuarioA/usuarioB es opcional)
+    // Participantes (siempre usar este arreglo)
     participantes: [{ type: Schema.Types.ObjectId, ref: "Usuario", index: true }],
 
-    // Legacy opcional (si todavía lo usas en algún sitio)
+    // Legacy opcional
     usuarioA: { type: Schema.Types.ObjectId, ref: "Usuario" },
     usuarioB: { type: Schema.Types.ObjectId, ref: "Usuario" },
 
-    // Relación opcional a un anuncio/oferta si aplicara
+    // Relación opcional a un anuncio/oferta
     anuncioId: { type: Schema.Types.ObjectId, ref: "Oferta", default: null },
 
     // === Favoritos por usuario ===
@@ -36,6 +37,9 @@ const ChatSchema = new Schema(
       default: () => new Map(),
     },
 
+    // === BLOQUEO por usuario (clave que faltaba) ===
+    blockedBy: [{ type: Schema.Types.ObjectId, ref: "Usuario", default: [] }],
+
     // === Meta para ordenar y mostrar previas ===
     ultimoMensaje: { type: String, default: "" },
     ultimoMensajeAt: { type: Date, default: null },
@@ -46,5 +50,7 @@ const ChatSchema = new Schema(
 // Índices útiles
 ChatSchema.index({ participantes: 1, updatedAt: -1 });
 ChatSchema.index({ tipo: 1, participantes: 1 });
+// Opcional
+ChatSchema.index({ blockedBy: 1 });
 
 module.exports = mongoose.model("Chat", ChatSchema);

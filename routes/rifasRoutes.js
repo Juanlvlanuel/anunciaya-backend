@@ -84,6 +84,19 @@ router.get("/local", rateLimit({ windowMs: 60_000, max: 60 }), async (req, res) 
   }
 });
 
+// 📌 GET: Obtener una rifa por ID (para validar INVALID_ID via CastError)
+router.get("/:id", rateLimit({ windowMs: 60_000, max: 60 }), async (req, res, next) => {
+  try {
+    const rifa = await Rifas.findById(req.params.id);
+    if (!rifa) {
+      return res.status(404).json({ error: { code: "NOT_FOUND", message: "Rifa no encontrada" } });
+    }
+    return res.json(rifa);
+  } catch (error) {
+    return next(error);
+  }
+});
+
 // ✅ Eliminar una rifa por ID
 router.delete("/:id", rateLimit({ windowMs: 60_000, max: 20 }), async (req, res) => {
   try {

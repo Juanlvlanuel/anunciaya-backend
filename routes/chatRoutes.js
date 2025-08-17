@@ -1,4 +1,4 @@
-// routes/chatRoutes-1.js
+// routes/chatRoutes.js — PATCH: endpoints bloquear/desbloquear
 const express = require("express");
 const router = express.Router();
 const verificarToken = require("../middleware/verificarToken");
@@ -14,11 +14,16 @@ const {
   fijarMensaje,
   desfijarMensaje,
   obtenerPins,
-  adminListarMensajes,
-  adminEliminarChat,
   editarMensaje,
   eliminarMensaje,
+  bloquearParaMi,        // NUEVO
+  desbloquearParaMi,     // NUEVO
+  // adminListarMensajes,
+  // adminEliminarChat,
 } = require("../controllers/chatController");
+
+// Carga opcional del middleware de admin (si existe)
+// const requireAdmin = require("../middleware/requireAdmin");
 
 // 🔒 Rate limiting simple en memoria (por proceso)
 const rateLimit = ({ windowMs = 60_000, max = 10 } = {}) => {
@@ -88,8 +93,12 @@ router.delete("/messages/:messageId/pin", verificarToken, rateLimit({ windowMs: 
 router.patch("/messages/:messageId", verificarToken, rateLimit({ windowMs: 60_000, max: 20 }), editarMensaje);
 router.delete("/messages/:messageId", verificarToken, rateLimit({ windowMs: 60_000, max: 20 }), eliminarMensaje);
 
-// Admin
-router.get("/admin/:chatId/messages", rateLimit({ windowMs: 60_000, max: 30 }), adminListarMensajes);
-router.delete("/admin/:chatId", rateLimit({ windowMs: 60_000, max: 10 }), adminEliminarChat);
+// === Bloquear / Desbloquear ===
+router.post("/:chatId/block", verificarToken, rateLimit({ windowMs: 60_000, max: 30 }), bloquearParaMi);
+router.delete("/:chatId/block", verificarToken, rateLimit({ windowMs: 60_000, max: 30 }), desbloquearParaMi);
+
+// === Admin (protegido) ===
+// router.get("/admin/:chatId/messages", verificarToken, requireAdmin, rateLimit({ windowMs: 60_000, max: 30 }), adminListarMensajes);
+// router.delete("/admin/:chatId", verificarToken, requireAdmin, rateLimit({ windowMs: 60_000, max: 10 }), adminEliminarChat);
 
 module.exports = router;

@@ -1,4 +1,3 @@
-// controllers/authAdminController-1.js
 import Admin from "../models/Admin.js";
 
 /**
@@ -34,11 +33,6 @@ export const loginAdmin = async (req, res) => {
     }
 
     // ✅ Éxito → devolver datos básicos (sin exponer sensibles)
-    // Nota: conserva el token "autorizado123" para compatibilidad con tu front actual.
-    // Cuando decidas migrar a JWT:
-    //   import jwt from "jsonwebtoken";
-    //   const token = jwt.sign({ id: admin._id, role: "admin" }, process.env.JWT_SECRET, { expiresIn: "8h" });
-    //   y devuelve `token` en lugar del placeholder.
     return res.json({
       _id: admin._id,
       usuario: admin.usuario,
