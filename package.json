@@ -2,15 +2,14 @@
   "name": "anunciaya-backend",
   "version": "1.0.0",
   "main": "server.js",
+  "description": "",
+  "author": "",
+  "license": "ISC",
   "scripts": {
     "dev": "nodemon server.js",
     "start": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"no tests\" && exit 0"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
   "dependencies": {
     "axios": "^1.11.0",
     "bcryptjs": "^3.0.2",
@@ -35,5 +34,6 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.10"
-  }
+  },
+  "engines": { "node": "20.x" }
 }
