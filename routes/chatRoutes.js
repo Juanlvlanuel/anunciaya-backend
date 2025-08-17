@@ -70,6 +70,8 @@ router.use((req, res, next) => {
 // Crear / obtener chat 1:1
 router.post("/ensure-privado", verificarToken, rateLimit({ windowMs: 60_000, max: 20 }), ensurePrivado);
 
+
+router.post("/privado", verificarToken, rateLimit({ windowMs: 60_000, max: 20 }), ensurePrivado);
 // Listado de chats del usuario autenticado
 router.get("/", verificarToken, rateLimit({ windowMs: 60_000, max: 60 }), listarChats);
 

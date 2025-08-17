@@ -1,6 +1,6 @@
 // controllers/usuarioController-1.js
-// Ajustes: bloqueo temporal tras 5 intentos fallidos (3 minutos) en login tradicional.
-// Mantiene Google Login con verificación de token. NONCE opcional salvo GOOGLE_NONCE_STRICT=1.
+// Ajustes: respuestas 409 unificadas con `mensaje` claro (duplicado).
+// Mantiene 201 en registro exitoso y toda la lógica existente.
 
 const Usuario = require("../models/Usuario");
 const generarJWT = require("../helpers/generarJWT");
@@ -31,8 +31,8 @@ const setRefreshCookie = (req, res, token) => {
     httpOnly: true,
     secure: isProd,
     sameSite: isProd ? "none" : "lax",
-    path: "/api",                              // ⬅️ unificado
-    maxAge: 1000 * 60 * 60 * 24 * 30,          // 30 días
+    path: "/api",
+    maxAge: 1000 * 60 * 60 * 24 * 30, // 30 días
   });
 };
 
@@ -126,20 +126,17 @@ const registrarUsuario = async (req, res) => {
     if (existeCorreo) {
       if (existeCorreo.tipo === tipo) {
         return res.status(409).json({
-          error: {
-            code: "DUPLICATE",
-            message: `Ya tienes una Cuenta Registrada como ${tipo === "usuario" ? "Usuario" : "Comerciante"}. ...`,
-            tipoCoincide: true
-          }
+          mensaje:
+            `Este correo ya tiene una cuenta registrada como ${tipo === "usuario" ? "Usuario" : "Comerciante"}. ` +
+            `Si es tuyo, inicia sesión.`,
+          error: { code: "DUPLICATE", tipoCoincide: true }
         });
-
       } else {
         return res.status(409).json({
-          error: {
-            code: "DUPLICATE",
-            mensaje: `Este Correo ya está Registrado como ${existeCorreo.tipo === "usuario" ? "Usuario" : "Comerciante"}. No puedes Registrar otro tipo de Cuenta con el mismo Correo.`,
-            tipoCoincide: false,
-          }
+          mensaje:
+            `Este correo ya está registrado como ${existeCorreo.tipo === "usuario" ? "Usuario" : "Comerciante"}. ` +
+            `No puedes registrar otro tipo de cuenta con el mismo correo.`,
+          error: { code: "DUPLICATE", tipoCoincide: false }
         });
       }
     }

@@ -1,6 +1,8 @@
+
 // controllers/promocionesController-1.js
-// Refuerzo: usa el usuario autenticado (token) para reacciones/guardados.
-// Valida ObjectId y mantiene respuestas claras sin exponer detalles internos.
+// Basado en tu promocionesController.js, con validaciones estrictas de ubicación en crearPromocion.
+// Mantiene la lógica existente para reacciones, guardado, visualización y obtener por ID.
+
 const { Types } = require("mongoose");
 const Oferta = require("../models/Oferta");
 
@@ -50,7 +52,7 @@ const reaccionarPromocion = async (req, res) => {
     }
 
     await oferta.save();
-    return res.json({ likes: oferta.likes });
+    return res.status(200).json({ likes: oferta.likes });
   } catch (error) {
     return res.status(500).json({ mensaje: "Error al reaccionar", error: safeErr(error) });
   }
@@ -82,7 +84,7 @@ const guardarPromocion = async (req, res) => {
     }
 
     await oferta.save();
-    return res.json({ guardados: oferta.guardados });
+    return res.status(200).json({ guardados: oferta.guardados });
   } catch (error) {
     return res.status(500).json({ mensaje: "Error al guardar promoción", error: safeErr(error) });
   }
@@ -99,7 +101,7 @@ const contarVisualizacion = async (req, res) => {
   try {
     const updated = await Oferta.findByIdAndUpdate(id, { $inc: { visualizaciones: 1 } });
     if (!updated) return res.status(404).json({ mensaje: "Promoción no encontrada" });
-    return res.json({ mensaje: "Visualización registrada" });
+    return res.status(200).json({ mensaje: "Visualización registrada" });
   } catch (error) {
     return res.status(500).json({ mensaje: "Error al contar visualización", error: safeErr(error) });
   }
@@ -118,9 +120,61 @@ const obtenerPromocionPorId = async (req, res) => {
       .populate("creador", "nombre")
       .populate("comentarios.usuario", "nombre");
     if (!oferta) return res.status(404).json({ mensaje: "Promoción no encontrada" });
-    return res.json(oferta);
+    return res.status(200).json(oferta);
   } catch (error) {
     return res.status(500).json({ mensaje: "Error al obtener promoción", error: safeErr(error) });
+  }
+};
+
+// 🔸 Crear nueva promoción (solo comerciantes) con ubicación obligatoria
+const crearPromocion = async (req, res) => {
+  try {
+    const uid = authUid(req);
+    if (!uid || !isValidObjectId(uid)) {
+      return res.status(401).json({ mensaje: "No autenticado" });
+    }
+    if (req.usuario?.tipo !== "comerciante") {
+      return res.status(403).json({ mensaje: "Solo comerciantes pueden crear promociones" });
+    }
+
+    const { titulo, descripcion, precio, categoria, ubicacion } = req.body || {};
+
+    if (!titulo || !descripcion) {
+      return res.status(400).json({ mensaje: "Título y descripción son obligatorios" });
+    }
+    if (precio != null && isNaN(Number(precio))) {
+      return res.status(400).json({ mensaje: "Precio inválido" });
+    }
+
+    // Ubicación obligatoria para filtrado geoespacial
+    if (!ubicacion || !Array.isArray(ubicacion.coordinates) || ubicacion.coordinates.length !== 2) {
+      return res.status(400).json({ mensaje: "Ubicación inválida: envía coordinates [longitud, latitud]" });
+    }
+    let [lng, lat] = ubicacion.coordinates;
+    lng = Number(lng); lat = Number(lat);
+    if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
+      return res.status(400).json({ mensaje: "Coordenadas no numéricas (usa números en [longitud, latitud])" });
+    }
+    if (lng < -180 || lng > 180 || lat < -90 || lat > 90) {
+      return res.status(400).json({ mensaje: "Coordenadas fuera de rango" });
+    }
+
+    const nueva = new Oferta({
+      titulo,
+      descripcion,
+      precio: precio != null ? Number(precio) : undefined,
+      categoria: categoria || "general",
+      creador: uid,
+      ubicacion: { type: "Point", coordinates: [lng, lat] },
+      visualizaciones: 0,
+      likes: [],
+      guardados: [],
+    });
+
+    await nueva.save();
+    return res.status(201).json(nueva);
+  } catch (error) {
+    return res.status(500).json({ mensaje: "Error al crear promoción", error: safeErr(error) });
   }
 };
 
@@ -129,4 +183,5 @@ module.exports = {
   guardarPromocion,
   contarVisualizacion,
   obtenerPromocionPorId,
+  crearPromocion,
 };

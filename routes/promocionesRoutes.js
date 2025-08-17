@@ -7,7 +7,8 @@ const {
   reaccionarPromocion,
   guardarPromocion,
   contarVisualizacion,
-  obtenerPromocionPorId
+  obtenerPromocionPorId,
+  crearPromocion: _crearPromocion, // puede no existir aún
 } = require("../controllers/promocionesController");
 
 // 🔒 Rate limiting simple en memoria (por proceso)
@@ -24,7 +25,7 @@ const rateLimit = ({ windowMs = 60_000, max = 10 } = {}) => {
     if (rec.count >= max) {
       const retryAfter = Math.ceil((rec.expires - now) / 1000);
       res.setHeader("Retry-After", retryAfter);
-      return res.status(429).json({ error: "Demasiadas solicitudes, intenta más tarde." });
+      return res.status(429).json({ error: { code: "TOO_MANY_REQUESTS", message: "Demasiadas solicitudes, intenta más tarde." } });
     }
     rec.count += 1;
     return next();
@@ -39,21 +40,52 @@ router.use((req, res, next) => {
   next();
 });
 
-// JSON + Content-Type para POST
+// JSON + Content-Type para POST/PUT/PATCH
 router.use(express.json({ limit: "1mb" }));
 router.use((req, res, next) => {
   const method = (req.method || "").toUpperCase();
-  if (["POST","PUT","PATCH"].includes(method)) {
+  if (["POST", "PUT", "PATCH"].includes(method)) {
     const ct = (req.headers["content-type"] || "").toLowerCase();
     if (!ct.includes("application/json")) {
-      return res.status(415).json({ error: "Content-Type debe ser application/json" });
+      return res.status(415).json({ error: { code: "UNSUPPORTED_MEDIA_TYPE", message: "Content-Type debe ser application/json" } });
     }
   }
   next();
 });
 
-// Reaccionar a una promoción (like/love) — requiere token (evita suplantación)
+// 🔐 Solo comerciantes
+function requireMerchant(req, res, next) {
+  const tipo = req?.usuario?.tipo;
+  const perfil = String(req?.usuario?.perfil || "");
+  const isMerchant = tipo === "comerciante" || perfil === "2";
+  if (!isMerchant) {
+    return res.status(403).json({ error: { code: "FORBIDDEN", message: "Solo comerciantes pueden realizar esta acción" } });
+  }
+  return next();
+}
+
+// ===================== RUTAS ===================== //
+
+// Crear promoción (solo comerciantes)
+router.post(
+  "/",
+  verificarToken,
+  requireMerchant,
+  rateLimit({ windowMs: 60_000, max: 20 }),
+  (req, res, next) => {
+    if (typeof _crearPromocion === "function") {
+      return _crearPromocion(req, res, next);
+    }
+    return res
+      .status(501)
+      .json({ error: { code: "NOT_IMPLEMENTED", message: "crearPromocion aún no está disponible" } });
+  }
+);
+
+// Reaccionar a una promoción (like/love) — requiere token
 router.post("/:id/reaccion", verificarToken, rateLimit({ windowMs: 60_000, max: 60 }), reaccionarPromocion);
+// Alias de compatibilidad
+router.post("/:id/reaccionar", verificarToken, rateLimit({ windowMs: 60_000, max: 60 }), reaccionarPromocion);
 
 // Guardar/desguardar promoción — requiere token
 router.post("/:id/guardar", verificarToken, rateLimit({ windowMs: 60_000, max: 60 }), guardarPromocion);

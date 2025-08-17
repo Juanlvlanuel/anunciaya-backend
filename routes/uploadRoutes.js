@@ -1,7 +1,3 @@
-// routes/uploadRoutes-1.js
-// Ruta de subida endurecida: usa el controlador reforzado, bloquea tipos no permitidos
-// y devuelve 400/415/405 claros (evita 500).
-
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
@@ -47,40 +43,43 @@ const upload = multer({
 const { handleUpload } = require("../controllers/uploadController");
 
 // Seguridad básica de cabeceras
-router.use((req, res, next) => {
+router.use((_req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("X-Content-Type-Options", "nosniff");
   next();
 });
 
-// Endpoint: POST /api/upload/single
-router.post("/single", (req, res, next) => {
-  upload.single("file")(req, res, (err) => {
-    // Errores de Multer (p. ej., límite de tamaño)
-    if (err instanceof multer.MulterError) {
-      return res.status(400).json({ error: err.message });
-    }
-    // Otros errores del middleware
-    if (err) {
-      return res.status(415).json({ error: "Tipo de archivo no permitido (usa JPG, PNG o WEBP)" });
-    }
-    // Rechazo del fileFilter o falta de archivo
-    if (!req.file) {
-      const msg = req.fileValidationError || "Archivo requerido";
-      const code = req.fileValidationError ? 415 : 400;
-      return res.status(code).json({ error: msg });
-    }
-    // OK: pasa al controlador
-    return handleUpload(req, res, next);
-  });
+function finalizeUpload(req, res, next, err) {
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({ error: { code: "BAD_REQUEST", message: err.message } });
+  }
+  if (err) {
+    return res.status(415).json({ error: { code: "UNSUPPORTED_MEDIA_TYPE", message: "Tipo de archivo no permitido (usa JPG, PNG o WEBP)" } });
+  }
+  if (!req.file) {
+    const code = req.fileValidationError ? 415 : 400;
+    const message = req.fileValidationError || "Archivo requerido";
+    return res.status(code).json({ error: { code: code === 415 ? "UNSUPPORTED_MEDIA_TYPE" : "BAD_REQUEST", message } });
+  }
+  return handleUpload(req, res, next);
+}
+
+// Alias 1: POST /api/upload (clave form-data: file)
+router.post("/", (req, res, next) => {
+  upload.single("file")(req, res, (err) => finalizeUpload(req, res, next, err));
 });
 
-// 405 para métodos no permitidos en /single
-router.all("/single", (req, res) => {
+// Alias 2: POST /api/upload/single (clave form-data: file) - se mantiene
+router.post("/single", (req, res, next) => {
+  upload.single("file")(req, res, (err) => finalizeUpload(req, res, next, err));
+});
+
+// 405 para métodos no permitidos
+router.all(["/", "/single"], (req, res) => {
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Método no permitido" });
+    return res.status(405).json({ error: { code: "METHOD_NOT_ALLOWED", message: "Método no permitido" } });
   }
-  return res.status(404).json({ error: "No encontrado" });
+  return res.status(404).json({ error: { code: "NOT_FOUND", message: "No encontrado" } });
 });
 
 module.exports = router;

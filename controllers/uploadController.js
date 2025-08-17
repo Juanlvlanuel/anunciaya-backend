@@ -37,7 +37,7 @@ exports.handleUpload = async (req, res) => {
     // 1) Solo imágenes
     if (!isImage) {
       try { fs.unlinkSync(absPath); } catch {}
-      return res.status(400).json({ error: "Solo se permiten imágenes (jpg, png, webp)" });
+      return res.status(415).json({ error: "Solo se permiten imágenes (jpg, png, webp)" });
     }
     // 2) Bloquea SVG y cualquier mimetype fuera de la lista
     if (isSvg || !ALLOWED_MIMES.has(mimetype)) {
