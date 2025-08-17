@@ -26,6 +26,18 @@ const { registerChatSocket } = require("./sockets/chatSocket");
 const app = express();
 const server = http.createServer(app);
 
+// --- Basic health & root routes for platform health checks ---
+app.get("/", (req, res) => {
+  res.status(200).json({ status: "ok", service: "anunciaya-backend", time: new Date().toISOString() });
+});
+app.get("/healthz", (req, res) => {
+  res.status(200).json({ status: "ok" });
+});
+app.get("/readyz", (req, res) => {
+  res.status(200).json({ ready: true });
+});
+// -------------------------------------------------------------
+
 // 🔒 Seguridad básica
 app.disable("x-powered-by");
 app.set("trust proxy", 1);
@@ -136,6 +148,7 @@ app.use((_, res, next) => {
 });
 
 const PUBLIC_ALLOWLIST = [
+  /^\/$/, /^\/healthz$/, /^\/readyz$/,
   /^\/api(\/|$)/,
   /^\/uploads(\/|$)/,
   /^\/socket\.io(\/|$)/,
