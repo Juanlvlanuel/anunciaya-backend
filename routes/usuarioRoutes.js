@@ -25,7 +25,7 @@ const getRefreshCookieOpts = (req) => {
     secure: isProd,                 // en localhost queda false
     sameSite: isProd ? "none" : "lax",
     path: "/api",                   // <— unificado
-    maxAge: 1000 * 60 * 60 * 24 * 30,
+    maxAge: 1000 * 60 * 60 * 24 * 14,
   };
 };
 const clearRefreshCookieAll = (req, res) => {
@@ -98,6 +98,12 @@ router.get("/admin-test", verificarToken, requireAdmin, (req, res) => {
     mensaje: "Acceso admin concedido",
     admin: req.admin || { method: "jwt" },
   });
+});
+
+// ===== NUEVO: sesión actual (paso 1) =====
+router.get("/session", verificarToken, (req, res) => {
+  // Devuelve la información mínima y segura del usuario ya adjunta por verificarToken
+  return res.json({ usuario: req.usuario });
 });
 
 // ===== Refresh (rotación de un solo uso) =====
