@@ -1,5 +1,6 @@
 // models/Usuario-1.js
 // Esquema robusto con bloqueo temporal tras múltiples fallos de login (5 intentos -> 3 minutos)
+// Ajuste: contraseña no requerida para Google/Facebook; validación condicional de longitud.
 
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
@@ -26,9 +27,20 @@ const UsuarioSchema = new mongoose.Schema(
     },
     contraseña: {
       type: String,
-      minlength: [6, "La contraseña debe tener al menos 6 caracteres"],
       select: false,
-      default: "",
+      default: null,
+      required: function () {
+        // Solo exigir contraseña cuando NO sea autenticación social
+        return !this.autenticadoPorGoogle && !this.autenticadoPorFacebook;
+      },
+      validate: {
+        // Permitir null/"" para cuentas sociales; si existe, mínimo 6
+        validator: function (v) {
+          if (!v) return true;
+          return typeof v === "string" && v.length >= 6;
+        },
+        message: "La contraseña debe tener al menos 6 caracteres",
+      },
     },
     tipo: {
       type: String,
@@ -51,6 +63,10 @@ const UsuarioSchema = new mongoose.Schema(
       default: "",
     },
     autenticadoPorGoogle: {
+      type: Boolean,
+      default: false,
+    },
+    autenticadoPorFacebook: {
       type: Boolean,
       default: false,
     },

@@ -1,6 +1,6 @@
 // controllers/usuarioController-1.js
-// Ajustes: respuestas 409 unificadas con `mensaje` claro (duplicado).
-// Mantiene 201 en registro exitoso y toda la lógica existente.
+// Ajuste: en registro por Google, no establecer contraseña "" para evitar validación.
+// Se mantiene toda la lógica existente.
 
 const Usuario = require("../models/Usuario");
 const generarJWT = require("../helpers/generarJWT");
@@ -8,14 +8,9 @@ const { OAuth2Client } = require("google-auth-library");
 const { google } = require("googleapis");
 const { Types } = require("mongoose");
 
-// === Refresh token cookie (consistente con usuarioController) ===
 const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
-
-// === NUEVO: helpers access/refresh (añadidos sin borrar lógica actual) ===
 const { signAccess, signRefresh } = require("../helpers/tokens");
 
-// Detecta si debe usar cookies seguras (https) y SameSite=None
-// En localhost/127.0.0.1 SIEMPRE usamos secure:false + sameSite:"lax"
 const isLocalhost = (req) => {
   const host = String(req.headers?.host || "").split(":")[0];
   return host === "localhost" || host === "127.0.0.1";
@@ -36,15 +31,12 @@ const setRefreshCookie = (req, res, token) => {
   });
 };
 
-// === Google OAuth env ===
 const CLIENT_ID =
   process.env.GOOGLE_CLIENT_ID ||
   process.env.GOOGLE_CLIENT_ID_PROD || "";
-
 const CLIENT_SECRET =
   process.env.GOOGLE_CLIENT_SECRET ||
   process.env.GOOGLE_CLIENT_SECRET_PROD || "";
-
 const REDIRECT_URI =
   process.env.GOOGLE_CALLBACK_URL ||
   process.env.GOOGLE_CALLBACK_URL_PROD ||
@@ -53,7 +45,7 @@ const REDIRECT_URI =
 const GOOGLE_AUDIENCES = [CLIENT_ID].filter(Boolean);
 const client = new OAuth2Client(CLIENT_ID);
 
-/* ===================== Helpers ===================== */
+/* Helpers */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const norm = (v) => (v ?? "").toString().trim();
 const normEmail = (v) => norm(v).toLowerCase();
@@ -63,19 +55,14 @@ const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const extractTipoPerfil = (raw) => {
   let t = norm(raw?.tipo);
   let p = norm(raw?.perfil);
-
   if (p && typeof p === "object" && "perfil" in p) p = p.perfil;
-
   if (typeof p === "string" && (p.trim().startsWith("{") || p.trim().startsWith("["))) {
     try { const parsed = JSON.parse(p); p = parsed?.perfil ?? parsed; } catch { }
   }
-
   if (typeof p === "string") p = p.trim();
   if (typeof p === "string" && /^\d+$/.test(p)) p = Number(p);
-
   if (p == null || p === "") p = 1;
   if (!t) t = "usuario";
-
   return { tipo: t, perfil: p };
 };
 
@@ -87,7 +74,6 @@ const normalizePerfilToSchema = (valor) => {
 /* ===================== REGISTRO TRADICIONAL ===================== */
 const registrarUsuario = async (req, res) => {
   try {
-    // Validación mínima de tipos (no rompe flujos existentes)
     if (req.body && 'correo' in req.body && typeof req.body.correo !== 'string') {
       return res.status(400).json({ mensaje: "Tipo inválido en 'correo'" });
     }
@@ -155,7 +141,7 @@ const registrarUsuario = async (req, res) => {
     let access;
     try { access = signAccess(nuevoUsuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
     let refresh;
-    try { const tmp = await signRefresh(nuevoUsuario._id); refresh = tmp.refresh; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
+    try { const tmp = await signRefresh(nuevoUsuario._id); const { refresh: r } = tmp; refresh = r; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
     setRefreshCookie(req, res, refresh);
 
     return res.status(201).json({
@@ -188,7 +174,6 @@ const registrarUsuario = async (req, res) => {
 /* ===================== LOGIN TRADICIONAL ===================== */
 const loginUsuario = async (req, res) => {
   try {
-    // Validación mínima de tipos
     if (req.body && 'correo' in req.body && typeof req.body.correo !== 'string') {
       return res.status(400).json({ mensaje: "Tipo inválido en 'correo'" });
     }
@@ -255,7 +240,7 @@ const loginUsuario = async (req, res) => {
     let access;
     try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
     let refresh;
-    try { const tmp = await signRefresh(usuario._id); refresh = tmp.refresh; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
+    try { const tmp = await signRefresh(usuario._id); const { refresh: r } = tmp; refresh = r; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
     setRefreshCookie(req, res, refresh);
 
     const usuarioLimpio = usuario.toJSON ? usuario.toJSON() : usuario;
@@ -327,7 +312,6 @@ const autenticarConGoogle = async (req, res) => {
     const payload = ticket.getPayload() || {};
     const tokenNonce = (payload && payload.nonce ? String(payload.nonce).trim() : "");
 
-    // NONCE opcional salvo GOOGLE_NONCE_STRICT=1
     const strict = String(process.env.GOOGLE_NONCE_STRICT || "") === "1";
     if (strict) {
       if (!clientNonce || !tokenNonce || tokenNonce !== clientNonce) {
@@ -353,7 +337,7 @@ const autenticarConGoogle = async (req, res) => {
       let access;
       try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
       let refresh;
-      try { const tmp = await signRefresh(usuario._id); refresh = tmp.refresh; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
+      try { const tmp = await signRefresh(usuario._id); const { refresh: r } = tmp; refresh = r; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
       setRefreshCookie(req, res, refresh);
 
       return res.status(200).json({
@@ -381,7 +365,7 @@ const autenticarConGoogle = async (req, res) => {
       nombre,
       tipo,
       perfil: String(normalizePerfilToSchema(perfil)),
-      contraseña: "",
+      // contraseña: ""  // ← Antes causaba validación. Ahora no se envía.
       nickname: (correo.split("@")[0] || "user") + Date.now(),
       autenticadoPorGoogle: true,
     });
@@ -390,7 +374,7 @@ const autenticarConGoogle = async (req, res) => {
     let access;
     try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
     let refresh;
-    try { const tmp = await signRefresh(usuario._id); refresh = tmp.refresh; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
+    try { const tmp = await signRefresh(usuario._id); const { refresh: r } = tmp; refresh = r; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
     setRefreshCookie(req, res, refresh);
 
     return res.status(200).json({
@@ -415,7 +399,6 @@ const autenticarConGoogle = async (req, res) => {
   }
 };
 
-// Configuración para cookie del state
 const STATE_COOKIE = process.env.STATE_COOKIE_NAME || "g_state";
 const stateCookieOpts = {
   httpOnly: true,
@@ -425,7 +408,6 @@ const stateCookieOpts = {
   maxAge: 5 * 60 * 1000,
 };
 
-/* ===================== INICIAR OAUTH (STATE EN COOKIE) ===================== */
 const iniciarGoogleOAuth = (req, res) => {
   try {
     const bytes = require("crypto").randomBytes(16);
@@ -454,7 +436,6 @@ const iniciarGoogleOAuth = (req, res) => {
   }
 };
 
-/* ===================== HANDLER CALLBACK (GET) ===================== */
 const googleCallbackHandler = async (req, res) => {
   try {
     const stateQuery = (req.query?.state || "").toString().trim();
@@ -496,7 +477,7 @@ const googleCallbackHandler = async (req, res) => {
     let access;
     try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
     let refresh;
-    try { const tmp = await signRefresh(usuario._id); refresh = tmp.refresh; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
+    try { const tmp = await signRefresh(usuario._id); const { refresh: r } = tmp; refresh = r; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
     setRefreshCookie(req, res, refresh);
 
     return res.redirect(
@@ -518,7 +499,6 @@ const googleCallbackHandler = async (req, res) => {
   }
 };
 
-/* ===================== BÚSQUEDA GLOBAL ===================== */
 const searchUsuarios = async (req, res) => {
   try {
     const raw = req.query?.q || "";
