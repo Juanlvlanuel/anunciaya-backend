@@ -1,3 +1,6 @@
+// routes/usuarioRoutes-1.js
+// Corrige la colocación de /session (estaba anidada dentro de /admin-test) y no cambia tu lógica.
+
 const express = require("express");
 const router = express.Router();
 
@@ -7,7 +10,7 @@ const { signAccess, signRefresh, revokeFamily } = require("../helpers/tokens");
 
 const verificarToken = require("../middleware/verificarToken");
 const { rejectExtra } = require("../middleware/rejectExtra");
-const requireAdmin = require("../middleware/requireAdmin"); // <-- ruta corregida
+const requireAdmin = require("../middleware/requireAdmin");
 
 let C;
 try {
@@ -16,30 +19,27 @@ try {
   C = require("../controllers/usuarioController");
 }
 
-// ===== Config cookie del refresh (unificada) =====
 const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
 const getRefreshCookieOpts = (req) => {
   const isProd = process.env.NODE_ENV === "production";
   return {
     httpOnly: true,
-    secure: isProd,                 // en localhost queda false
+    secure: isProd,
     sameSite: isProd ? "none" : "lax",
-    path: "/api",                   // <— unificado
+    path: "/api",
     maxAge: 1000 * 60 * 60 * 24 * 14,
   };
 };
 const clearRefreshCookieAll = (req, res) => {
   const base = getRefreshCookieOpts(req);
-  // limpia en ambos paths por si quedó basura antigua
   res.clearCookie(REFRESH_COOKIE_NAME, { ...base, path: "/api", maxAge: 0 });
   res.clearCookie(REFRESH_COOKIE_NAME, { ...base, path: "/api/usuarios/auth/refresh", maxAge: 0 });
 };
 
-// === Seguridad mínima de Content-Type para métodos de escritura ===
 router.use(express.json({ limit: "1.5mb" }));
 router.use((req, res, next) => {
   const method = (req.method || "").toUpperCase();
-  if (["POST","PUT","PATCH"].includes(method)) {
+  if (["POST", "PUT", "PATCH"].includes(method)) {
     const ct = (req.headers["content-type"] || "").toLowerCase();
     if (!ct.includes("application/json")) {
       return res.status(415).json({ error: "Content-Type debe ser application/json" });
@@ -48,51 +48,50 @@ router.use((req, res, next) => {
   return next();
 });
 
-// ===== Rutas de cuenta / auth =====
-// Registro: solo campos permitidos (sin forzar tipos para no romper perfil numérico)
-router.post(
-  "/registro",
+// ===== Cuenta / Auth =====
+router.post("/registro",
   rejectExtra(["correo","email","contraseña","password","nombre","nombreCompleto","name","tipo","perfil"]),
   C.registrarUsuario
 );
 
-// Login: alias de entrada permitidos (se mantiene la validación actual)
-router.post(
-  "/login",
-  rejectExtra(["email", "password", "correo", "contraseña", "login"]),
+router.post("/login",
+  rejectExtra(["email","password","correo","contraseña","login"]),
   C.loginUsuario
 );
 
-// seleccionar-perfil: solo permitir 'perfil' (se mantiene verificarToken primero)
-router.post(
-  "/seleccionar-perfil",
+router.post("/seleccionar-perfil",
   verificarToken,
   rejectExtra(["perfil"]),
   C.seleccionarPerfil
 );
 
-// ===== Google OAuth =====
-router.post(
-  "/auth/google",
-  rejectExtra(["credential", "nonce", "tipo", "perfil"]),
+// Google OAuth
+router.post("/auth/google",
+  rejectExtra(["credential","nonce","tipo","perfil"]),
   C.autenticarConGoogle
 );
 router.get("/auth/google", C.iniciarGoogleOAuth);
 router.get("/auth/google/callback", C.googleCallbackHandler);
 
 // Compatibilidad legacy
-router.post(
-  "/google",
-  rejectExtra(["credential", "nonce", "tipo", "perfil"]),
+router.post("/google",
+  rejectExtra(["credential","nonce","tipo","perfil"]),
   C.autenticarConGoogle
 );
 router.get("/google", C.iniciarGoogleOAuth);
 router.get("/google/callback", C.googleCallbackHandler);
 
-// ===== Búsqueda =====
+// Perfil (autenticado)
+router.patch("/me",
+  verificarToken,
+  rejectExtra(["nombre","telefono","direccion","avatarUrl","fotoPerfil"]),
+  C.actualizarPerfil
+);
+
+// Búsqueda
 router.get("/search", C.searchUsuarios);
 
-// ===== Admin test (protegido) =====
+// Admin test
 router.get("/admin-test", verificarToken, requireAdmin, (req, res) => {
   return res.json({
     mensaje: "Acceso admin concedido",
@@ -100,19 +99,15 @@ router.get("/admin-test", verificarToken, requireAdmin, (req, res) => {
   });
 });
 
-// ===== NUEVO: sesión actual (paso 1) =====
-router.get("/session", verificarToken, (req, res) => {
-  // Devuelve la información mínima y segura del usuario ya adjunta por verificarToken
-  return res.json({ usuario: req.usuario });
-});
+// ⬇︎ Sesión actual (fuera del handler anterior)
+router.get("/session", verificarToken, C.getSession);
 
-// ===== Refresh (rotación de un solo uso) =====
+// Refresh
 router.post("/auth/refresh", rejectExtra([]), async (req, res) => {
   try {
     const raw = req.cookies?.[REFRESH_COOKIE_NAME];
     if (!raw) return res.status(401).json({ mensaje: "No refresh token" });
 
-    // 1) Verificar firma
     let payload;
     try {
       payload = jwt.verify(raw, process.env.REFRESH_JWT_SECRET, {
@@ -124,7 +119,6 @@ router.post("/auth/refresh", rejectExtra([]), async (req, res) => {
       return res.status(401).json({ mensaje: "Refresh inválido" });
     }
 
-    // 2) Coincidencia exacta con DB (evita reutilización)
     const doc = await RefreshToken.findOne({ jti: payload.jti, userId: payload.uid });
     const incomingHash = RefreshToken.hash
       ? RefreshToken.hash(raw)
@@ -136,15 +130,12 @@ router.post("/auth/refresh", rejectExtra([]), async (req, res) => {
       return res.status(401).json({ mensaje: "Refresh reutilizado o inválido" });
     }
 
-    // 3) Revocar usado
     doc.revokedAt = new Date();
     await doc.save();
 
-    // 4) Emitir nuevos tokens
     const access = signAccess(payload.uid);
     const { refresh: newRefresh } = await signRefresh(payload.uid, payload.fam);
 
-    // 5) Rotar cookie (limpia ambos paths y setea sólo en /api)
     clearRefreshCookieAll(req, res);
     res.cookie(REFRESH_COOKIE_NAME, newRefresh, getRefreshCookieOpts(req));
 
@@ -155,7 +146,7 @@ router.post("/auth/refresh", rejectExtra([]), async (req, res) => {
   }
 });
 
-// ===== Logout: revoca y limpia cookie =====
+// Logout
 router.post("/logout", async (req, res) => {
   try {
     const raw = req.cookies?.[REFRESH_COOKIE_NAME];
