@@ -44,6 +44,17 @@ function assertEnvSecrets() {
   }
 }
 
+function parseExpiresToSeconds(expStr) {
+  const s = String(expStr || "15m").trim().toLowerCase();
+  if (/^\d+$/.test(s)) return parseInt(s,10);
+  const m = s.match(/^(\d+)\s*([smhd])$/);
+  if (!m) return 900;
+  const n = parseInt(m[1],10);
+  const unit = m[2];
+  const map = { s:1, m:60, h:3600, d:86400 };
+  return n * (map[unit] || 60);
+}
+
 const signAccess = (uid) => {
   assertEnvSecrets();
   return jwt.sign({ uid }, process.env.JWT_SECRET, {
@@ -95,4 +106,6 @@ const revokeFamily = async (family) => {
   return { n: 0 };
 };
 
-module.exports = { signAccess, signRefresh, revokeFamily, hashToken };
+const getAccessTTLSeconds = () => parseExpiresToSeconds(process.env.JWT_EXPIRES_IN || "15m");
+
+module.exports = { signAccess, signRefresh, revokeFamily, hashToken, getAccessTTLSeconds };

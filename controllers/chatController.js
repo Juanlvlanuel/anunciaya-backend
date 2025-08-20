@@ -1,4 +1,7 @@
-// controllers/chatController.js — PATCH Bloquear/Desbloquear + isBlocked + sort por ultimoMensajeAt
+// controllers/chatController-1.js
+// Añade normalización de archivos (url/thumbUrl/isImage) y endpoint enviarMensaje.
+// Mantiene toda tu lógica actual y exports existentes.
+
 const Chat = require("../models/Chat");
 const Mensaje = require("../models/Mensaje");
 const Usuario = require("../models/Usuario");
@@ -24,11 +27,9 @@ function isValidObjectId(id) {
 function sanitizeTexto(texto) {
   if (typeof texto !== "string") return "";
   const t = texto.trim();
-  // Limita tamaño para evitar payloads enormes en edición
   return t.length > 4000 ? t.slice(0, 4000) : t;
 }
-
-/* ---- helpers específicos de pins (soporta Map, objeto o nada) ---- */
+/* ---- pins helpers (compat) ---- */
 function getPinsArray(chat, uid) {
   try {
     const key = String(uid);
@@ -57,6 +58,54 @@ function setPinsArray(chat, uid, arr) {
   chat.markModified?.("pinsByUser");
 }
 
+/* ========= Normalización de archivos ========= */
+const IMG_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+function looksLikeImageName(name = "") {
+  return IMG_EXT_RE.test(String(name));
+}
+function normalizeArchivo(a = {}) {
+  const out = { ...a };
+
+  // Fuente de URL (mejor esfuerzo)
+  out.url =
+    a.url ||
+    a.fileUrl ||
+    a.location ||
+    a.src ||
+    a.path ||
+    a.ruta ||
+    (a.filename && a.filename.startsWith("/uploads/") ? a.filename : null) ||
+    (a.filename && !a.filename.startsWith("/") ? `/uploads/${a.filename}` : null) ||
+    "";
+
+  // Miniatura
+  out.thumbUrl =
+    a.thumbUrl ||
+    a.thumbnail ||
+    (typeof out.url === "string" && out.url.includes("/uploads/")
+      ? out.url.replace(/(\.[a-z0-9]+)$/i, "_sm.webp")
+      : "");
+
+  // isImage por bandera/mime/extension
+  const mime = String(a.mimeType || a.contentType || a.type || "").toLowerCase();
+  out.isImage =
+    a.isImage === true ||
+    mime.startsWith("image/") ||
+    looksLikeImageName(a.name || a.filename || out.url);
+
+  // Nombre amigable
+  out.name = a.name || a.filename || a.originalName || "";
+
+  return out;
+}
+
+function normalizeMensajeArchivos(m) {
+  if (!m) return m;
+  const archivos = Array.isArray(m.archivos) ? m.archivos : [];
+  m.archivos = archivos.map(normalizeArchivo);
+  return m;
+}
+
 /* =========================
    Crear / obtener chat 1:1
 ========================= */
@@ -66,14 +115,12 @@ async function ensurePrivado(req, res) {
     const me = asObjectId(getAuthUserId(req));
     let { usuarioAId, usuarioBId, anuncioId } = req.body || {};
 
-    // Validaciones básicas
     const aValid = usuarioAId && Types.ObjectId.isValid(String(usuarioAId));
     const bValid = usuarioBId && Types.ObjectId.isValid(String(usuarioBId));
     if (!aValid && !bValid) {
       return res.status(400).json({ mensaje: "Falta usuario destino" });
     }
 
-    // Normalizar IDs y determinar "other"
     usuarioAId = aValid ? asObjectId(usuarioAId) : null;
     usuarioBId = bValid ? asObjectId(usuarioBId) : null;
 
@@ -85,21 +132,18 @@ async function ensurePrivado(req, res) {
       return res.status(400).json({ mensaje: "Falta usuario destino válido" });
     }
 
-    // Verificar existencia de ambos usuarios
     const [yo, el] = await Promise.all([
       Usuario.findById(me).select("_id"),
       Usuario.findById(other).select("_id"),
     ]);
     if (!yo || !el) return res.status(404).json({ mensaje: "Usuario no encontrado" });
 
-    // Buscar chat existente exacto
     let chat = await Chat.findOne({
       tipo: "privado",
       participantes: { $all: [me, other], $size: 2 },
       ...(anuncioId ? { anuncioId: asObjectId(anuncioId) } : {}),
     }).populate("participantes", "_id nombre nickname correo fotoPerfil tipo");
 
-    // Restaurar si estaba eliminado para mí
     if (chat && Array.isArray(chat.deletedFor)) {
       const meStr = String(me);
       const hasMe = chat.deletedFor.some((x) => String(x) === meStr);
@@ -113,11 +157,9 @@ async function ensurePrivado(req, res) {
       }
     }
 
-    // Crear si no existe
     if (!chat) {
-      
       __created = true;
-chat = await Chat.create({
+      chat = await Chat.create({
         tipo: "privado",
         participantes: [me, other],
         anuncioId: anuncioId ? asObjectId(anuncioId) : null,
@@ -138,7 +180,6 @@ chat = await Chat.create({
 /* =========================
    Listar chats (favoritos arriba)
 ========================= */
-// controllers/chatController.js
 async function listarChats(req, res) {
   try {
     const uid = getAuthUserId(req);
@@ -152,26 +193,13 @@ async function listarChats(req, res) {
           $or: [{ deletedFor: { $exists: false } }, { deletedFor: { $ne: uidObj } }],
         },
       },
-
-      // Normaliza arrays para evitar $in con null
-      { $addFields: {
-          _favoritesBySafe: { $ifNull: ["$favoritesBy", []] },
-          _blockedBySafe:   { $ifNull: ["$blockedBy",   []] },
-        }
-      },
-      { $addFields: {
-          isFavorite: { $in: [uidObj, "$_favoritesBySafe"] },
-          isBlocked:  { $in: [uidObj, "$_blockedBySafe"] },
-        }
-      },
-
-      // Orden por actividad (favoritos arriba)
+      { $addFields: { _favoritesBySafe: { $ifNull: ["$favoritesBy", []] }, _blockedBySafe: { $ifNull: ["$blockedBy", []] } } },
+      { $addFields: { isFavorite: { $in: [uidObj, "$_favoritesBySafe"] }, isBlocked: { $in: [uidObj, "$_blockedBySafe"] } } },
       { $sort: { isFavorite: -1, ultimoMensajeAt: -1, updatedAt: -1 } },
       { $limit: 200 },
-
       {
         $lookup: {
-          from: "usuarios",               // colección de Usuario
+          from: "usuarios",
           localField: "participantes",
           foreignField: "_id",
           as: "participantes",
@@ -212,12 +240,10 @@ async function listarChats(req, res) {
     const chats = await Chat.aggregate(pipeline);
     return res.json(chats);
   } catch (e) {
-    // Loguea el error real para que lo veas en consola del server
     console.error("[listarChats] ERROR:", e?.message, e);
     return res.status(500).json({ mensaje: "Error al listar chats" });
   }
 }
-
 
 /* =========================
    Obtener mensajes
@@ -233,24 +259,88 @@ async function obtenerMensajes(req, res) {
 
     const chat = await Chat.findById(chatId);
     if (!chat) return res.status(404).json({ mensaje: "Chat no encontrado" });
-
     if (!(chat.participantes || []).some((x) => String(x) === uid)) {
       return res.status(403).json({ mensaje: "No autorizado" });
     }
 
-    const mensajes = await Mensaje.find({ chat: chatId })
-      .sort({ createdAt: 1 })
-      .lean();
-
+    const mensajes = await Mensaje.find({ chat: chatId }).sort({ createdAt: 1 }).lean();
     const normalizados = mensajes.map((m) => {
       if (!m.replyTo && m.reply) m.replyTo = m.reply;
-      return m;
+      return normalizeMensajeArchivos(m);
     });
 
     return res.json(normalizados);
   } catch (e) {
     console.error("obtenerMensajes:", e);
     return res.status(500).json({ mensaje: "Error al obtener mensajes" });
+  }
+}
+
+/* =========================
+   Enviar mensaje (nuevo)
+========================= */
+async function enviarMensaje(req, res) {
+  try {
+    const uid = getAuthUserId(req);
+    const { chatId } = req.params;
+    if (!isValidObjectId(chatId)) return res.status(400).json({ mensaje: "chatId inválido" });
+
+    const chat = await Chat.findById(chatId);
+    if (!chat) return res.status(404).json({ mensaje: "Chat no encontrado" });
+    if (!toIdStrings(chat.participantes).includes(String(uid))) {
+      return res.status(403).json({ mensaje: "No autorizado" });
+    }
+
+    const body = req.body || {};
+    const texto = sanitizeTexto(body.texto);
+    const archivosRaw = Array.isArray(body.archivos) ? body.archivos : [];
+
+    const archivos = archivosRaw.map(normalizeArchivo);
+
+    // Normaliza replyTo (autor como objeto; completa texto/autor desde mensaje original si falta)
+    let replyDoc;
+    if (body.replyTo) {
+      let rTexto = body.replyTo.texto || body.replyTo.preview || "";
+      let rAutor = body.replyTo.autor || null;
+      if (rAutor && typeof rAutor !== "object") rAutor = { _id: String(rAutor) };
+      if ((!rTexto || !rAutor) && body.replyTo._id) {
+        try {
+          const original = await Mensaje.findById(body.replyTo._id)
+            .select("_id texto emisor")
+            .populate("emisor", "_id nombre nickname");
+          if (original) {
+            if (!rTexto) rTexto = original.texto || "";
+            if (!rAutor && original.emisor) {
+              rAutor = { _id: original.emisor._id, nombre: original.emisor.nombre, nickname: original.emisor.nickname };
+            }
+          }
+        } catch {}
+      }
+      replyDoc = { _id: body.replyTo._id || undefined, texto: rTexto || "", preview: body.replyTo.preview || rTexto || "", autor: rAutor || null };
+    }
+
+    const doc = await Mensaje.create({
+      chat: asObjectId(chatId),
+      emisor: asObjectId(uid),
+      texto: texto || undefined,
+      archivos,
+      replyTo: replyDoc || undefined,
+      forwardOf: body.forwardOf || undefined,
+    });
+
+    // Actualiza último mensaje en Chat (si tu modelo lo usa)
+    try {
+      await Chat.updateOne(
+        { _id: chat._id },
+        { $set: { ultimoMensaje: texto || (archivos.length ? "[archivo]" : ""), ultimoMensajeAt: new Date() } }
+      );
+    } catch {}
+
+    const saved = await Mensaje.findById(doc._id).lean();
+    return res.status(201).json(normalizeMensajeArchivos(saved));
+  } catch (e) {
+    console.error("enviarMensaje:", e);
+    return res.status(500).json({ mensaje: "Error al enviar mensaje" });
   }
 }
 
@@ -370,7 +460,7 @@ async function quitarFavorito(req, res) {
 }
 
 /* =========================
-   Pins por usuario (robusto)
+   Pins por usuario
 ========================= */
 async function fijarMensaje(req, res) {
   try {
@@ -457,7 +547,7 @@ async function obtenerPins(req, res) {
     const mensajes = ids.length
       ? await Mensaje.find({ _id: { $in: ids } }).sort({ createdAt: 1 })
       : [];
-    return res.json(mensajes);
+    return res.json(mensajes.map(normalizeMensajeArchivos));
   } catch (e) {
     console.error("obtenerPins:", e);
     return res.status(500).json({ mensaje: "Error al obtener pins" });
@@ -467,32 +557,57 @@ async function obtenerPins(req, res) {
 /* =========================
    Mensajes: editar y eliminar
 ========================= */
+
 async function editarMensaje(req, res) {
   try {
     const uid = getAuthUserId(req);
     const { messageId } = req.params;
-    const texto = sanitizeTexto((req.body || {}).texto);
 
     if (!isValidObjectId(messageId)) {
       return res.status(400).json({ mensaje: "messageId inválido" });
     }
-    if (!texto) {
-      return res.status(400).json({ mensaje: "Texto inválido" });
-    }
+
+    const eliminarImagen =
+      String(req.body?.eliminarImagen || "").toLowerCase() === "true" ||
+      req.body?.eliminarImagen === true;
+
+    const texto = sanitizeTexto((req.body || {}).texto);
 
     const msg = await Mensaje.findById(messageId);
     if (!msg) return res.status(404).json({ mensaje: "Mensaje no encontrado" });
 
-    // Debe ser autor del mensaje
     if (String(msg.emisor) !== String(uid)) {
       return res.status(403).json({ mensaje: "Solo puedes editar tus propios mensajes" });
     }
 
-    msg.texto = texto;
+    // Debe llegar al menos una intención: texto, archivo o eliminar imagen
+    if (!texto && !req.file && !eliminarImagen) {
+      return res.status(400).json({ mensaje: "Texto inválido" });
+    }
+
+    if (texto) {
+      msg.texto = texto;
+    }
+
+    if (eliminarImagen) {
+      msg.archivos = [];
+    }
+
+    if (req.file) {
+      const f = req.file || {};
+      const archivo = normalizeArchivo({
+        filename: f.filename,
+        name: f.originalname,
+        mimeType: f.mimetype,
+      });
+      msg.archivos = [archivo];
+    }
+
     msg.editedAt = new Date();
     await msg.save();
 
-    return res.json({ ok: true, mensaje: msg });
+    const out = normalizeMensajeArchivos(msg.toObject());
+    return res.json({ ok: true, mensaje: out });
   } catch (e) {
     console.error("editarMensaje:", e);
     return res.status(500).json({ mensaje: "Error al editar mensaje" });
@@ -511,7 +626,6 @@ async function eliminarMensaje(req, res) {
     const msg = await Mensaje.findById(messageId);
     if (!msg) return res.status(404).json({ mensaje: "Mensaje no encontrado" });
 
-    // Debe ser autor del mensaje
     if (String(msg.emisor) !== String(uid)) {
       return res.status(403).json({ mensaje: "Solo puedes borrar tus propios mensajes" });
     }
@@ -548,7 +662,6 @@ async function bloquearParaMi(req, res) {
     return res.status(500).json({ mensaje: "Error al bloquear" });
   }
 }
-
 async function desbloquearParaMi(req, res) {
   try {
     const uid = asObjectId(getAuthUserId(req));
@@ -574,6 +687,7 @@ module.exports = {
   ensurePrivado,
   listarChats,
   obtenerMensajes,
+  enviarMensaje,            // NUEVO
   eliminarParaMi,
   // favoritos
   toggleFavorito,
@@ -589,7 +703,4 @@ module.exports = {
   // bloqueo
   bloquearParaMi,
   desbloquearParaMi,
-  // admin (si los usas)
-  // adminListarMensajes,
-  // adminEliminarChat,
 };

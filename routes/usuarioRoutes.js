@@ -1,5 +1,5 @@
 // routes/usuarioRoutes-1.js
-// Añade POST /me/avatar con multer (campo 'avatar') y evita forzar application/json para esa ruta.
+// FastUX: añade expiresIn/issuedAt en /auth/refresh (compatibilidad total)
 
 const express = require("express");
 const path = require("path");
@@ -16,11 +16,20 @@ const verificarToken = require("../middleware/verificarToken");
 const { rejectExtra } = require("../middleware/rejectExtra");
 const requireAdmin = require("../middleware/requireAdmin");
 
+// Controllers principales (usuario)
 let C;
 try {
   C = require("../controllers/usuarioController-1");
 } catch {
   C = require("../controllers/usuarioController");
+}
+
+// Controlador de seguridad (si existe)
+let securityController;
+try {
+  securityController = require("../controllers/securityController");
+} catch {
+  securityController = require("../controllers/securityController-1");
 }
 
 const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
@@ -64,7 +73,7 @@ router.use(express.json({ limit: "5mb" }));
 router.use((req, res, next) => {
   const method = (req.method || "").toUpperCase();
   const url = req.originalUrl || req.url || "";
-  if (url.includes("/me/avatar")) return next(); // <-- permitir multipart
+  if (url.includes("/me/avatar")) return next(); // permitir multipart
   if (["POST", "PUT", "PATCH"].includes(method)) {
     const ct = (req.headers["content-type"] || "").toLowerCase();
     if (!ct.includes("application/json")) {
@@ -91,7 +100,7 @@ router.post("/seleccionar-perfil",
   C.seleccionarPerfil
 );
 
-// Google OAuth
+// Google OAuth (One Tap + OAuth clásico)
 router.post("/auth/google",
   rejectExtra(["credential", "nonce", "tipo", "perfil"]),
   C.autenticarConGoogle
@@ -114,7 +123,7 @@ router.patch("/me",
   C.actualizarPerfil
 );
 
-// NUEVO: subir avatar (multipart/form-data, campo 'avatar')
+// Subir avatar (multipart/form-data, campo 'avatar')
 router.post("/me/avatar",
   verificarToken,
   (req, res, next) => {
@@ -138,16 +147,34 @@ router.get("/search", C.searchUsuarios);
 
 // Admin test
 router.get("/admin-test", verificarToken, requireAdmin, (req, res) => {
-  return res.json({
-    mensaje: "Acceso admin concedido",
-    admin: req.admin || { method: "jwt" },
-  });
+  return res.json({ mensaje: "Acceso admin concedido", admin: req.admin || { method: "jwt" } });
 });
 
 // Sesión actual
 router.get("/session", verificarToken, C.getSession);
 
-// Refresh
+// ======== Seguridad ========
+router.get("/security/sessions", verificarToken, securityController?.listarSesiones || ((req, res)=>res.status(501).json({mensaje:"No implementado"})));
+router.post("/security/sessions/signout-all", verificarToken, securityController?.cerrarTodasSesiones || ((req, res)=>res.status(501).json({mensaje:"No implementado"})));
+router.post("/security/password", verificarToken, securityController?.cambiarPassword || ((req, res)=>res.status(501).json({mensaje:"No implementado"})));
+router.get("/security/connections", verificarToken, securityController?.getOAuthConnections || ((req, res)=>res.status(501).json({mensaje:"No implementado"})));
+router.post("/security/connections/:provider/unlink", verificarToken, securityController?.unlinkOAuth || ((req, res)=>res.status(501).json({mensaje:"No implementado"})));
+router.get("/security/2fa/status", verificarToken, securityController?.status2fa || ((req, res)=>res.status(501).json({mensaje:"No implementado"})));
+router.post("/security/2fa/enable", verificarToken, securityController?.enable2fa || ((req, res)=>res.status(501).json({mensaje:"No implementado"})));
+router.post("/security/2fa/disable", verificarToken, securityController?.disable2fa || ((req, res)=>res.status(501).json({mensaje:"No implementado"})));
+
+// ======== Refresh (añade expiresIn/issuedAt) ========
+function parseExpiresToSeconds(expStr) {
+  const s = String(expStr || "15m").trim().toLowerCase();
+  if (/^\d+$/.test(s)) return parseInt(s,10);
+  const m = s.match(/^(\d+)\s*([smhd])$/);
+  if (!m) return 900;
+  const n = parseInt(m[1],10);
+  const unit = m[2];
+  const map = { s:1, m:60, h:3600, d:86400 };
+  return n * (map[unit] || 60);
+}
+
 router.post("/auth/refresh", rejectExtra([]), async (req, res) => {
   try {
     const raw = req.cookies?.[REFRESH_COOKIE_NAME];
@@ -184,7 +211,8 @@ router.post("/auth/refresh", rejectExtra([]), async (req, res) => {
     clearRefreshCookieAll(req, res);
     res.cookie(REFRESH_COOKIE_NAME, newRefresh, getRefreshCookieOpts(req));
 
-    return res.json({ token: access });
+    const expiresIn = parseExpiresToSeconds(process.env.JWT_EXPIRES_IN || "15m");
+    return res.json({ token: access, expiresIn, issuedAt: Date.now() });
   } catch (e) {
     if (process.env.NODE_ENV !== "production") console.error("refresh error:", e);
     return res.status(500).json({ mensaje: "Error en refresh" });
@@ -196,13 +224,13 @@ router.post("/logout", async (req, res) => {
   try {
     const raw = req.cookies?.[REFRESH_COOKIE_NAME];
     if (raw) {
-    try {
+      try {
         const { jti, uid } = jwt.verify(raw, process.env.REFRESH_JWT_SECRET, {
           issuer: process.env.JWT_ISS,
           audience: process.env.JWT_AUD,
         });
         await RefreshToken.updateOne({ jti, userId: uid }, { $set: { revokedAt: new Date() } });
-      } catch { }
+      } catch {}
       clearRefreshCookieAll(req, res);
     }
     res.json({ mensaje: "Sesión cerrada" });

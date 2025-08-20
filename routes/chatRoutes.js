@@ -1,5 +1,8 @@
-// routes/chatRoutes.js — PATCH: endpoints bloquear/desbloquear
+// routes/chatRoutes-1.js
 const express = require("express");
+const path = require("path");
+const fs = require("fs");
+const multer = require("multer");
 const router = express.Router();
 const verificarToken = require("../middleware/verificarToken");
 
@@ -7,6 +10,7 @@ const {
   ensurePrivado,
   listarChats,
   obtenerMensajes,
+  enviarMensaje,
   eliminarParaMi,
   toggleFavorito,
   marcarFavorito,
@@ -16,37 +20,32 @@ const {
   obtenerPins,
   editarMensaje,
   eliminarMensaje,
-  bloquearParaMi,        // NUEVO
-  desbloquearParaMi,     // NUEVO
-  // adminListarMensajes,
-  // adminEliminarChat,
+  bloquearParaMi,
+  desbloquearParaMi,
 } = require("../controllers/chatController");
 
-// Carga opcional del middleware de admin (si existe)
-// const requireAdmin = require("../middleware/requireAdmin");
+// -------- Multer (disco) para edición con imagen --------
+const uploadDir = path.join(__dirname, "../uploads");
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-// 🔒 Rate limiting simple en memoria (por proceso)
-const rateLimit = ({ windowMs = 60_000, max = 10 } = {}) => {
-  const hits = new Map(); // key -> { count, expires }
-  return (req, res, next) => {
-    const key = (req.ip || req.connection?.remoteAddress || "unknown") + "|" + (req.baseUrl + req.path);
-    const now = Date.now();
-    const rec = hits.get(key);
-    if (!rec || rec.expires < now) {
-      hits.set(key, { count: 1, expires: now + windowMs });
-      return next();
-    }
-    if (rec.count >= max) {
-      const retryAfter = Math.ceil((rec.expires - now) / 1000);
-      res.setHeader("Retry-After", retryAfter);
-      return res.status(429).json({ error: "Demasiadas solicitudes, intenta más tarde." });
-    }
-    rec.count += 1;
-    return next();
-  };
-};
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, uploadDir),
+  filename: (_req, file, cb) => {
+    const safe = (file.originalname || "file").replace(/\s+/g, "_").replace(/[^\w.\-]/g, "");
+    cb(null, `${Date.now()}_${safe}`);
+  },
+});
+const upload = multer({
+  storage,
+  limits: { fileSize: 15 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (/^image\/(jpeg|png|webp|gif)$/i.test(file.mimetype)) return cb(null, true);
+    req.fileValidationError = "Tipo de archivo no permitido (JPG, PNG, WEBP, GIF)";
+    return cb(null, false);
+  },
+});
 
-// 🔒 Cabeceras de seguridad
+// Hardening headers
 router.use((req, res, next) => {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Pragma", "no-cache");
@@ -54,53 +53,53 @@ router.use((req, res, next) => {
   next();
 });
 
-// 🔒 JSON para modificaciones
 router.use(express.json({ limit: "1.5mb" }));
-router.use((req, res, next) => {
-  const method = (req.method || "").toUpperCase();
-  if (["POST","PUT","PATCH"].includes(method)) {
-    const ct = (req.headers["content-type"] || "").toLowerCase();
-    if (!ct.includes("application/json")) {
-      return res.status(415).json({ error: "Content-Type debe ser application/json" });
-    }
-  }
-  next();
-});
 
-// Crear / obtener chat 1:1
-router.post("/ensure-privado", verificarToken, rateLimit({ windowMs: 60_000, max: 20 }), ensurePrivado);
+// Privado
+router.post("/ensure-privado", verificarToken, ensurePrivado);
+router.post("/privado", verificarToken, ensurePrivado);
 
+// Chats
+router.get("/", verificarToken, listarChats);
 
-router.post("/privado", verificarToken, rateLimit({ windowMs: 60_000, max: 20 }), ensurePrivado);
-// Listado de chats del usuario autenticado
-router.get("/", verificarToken, rateLimit({ windowMs: 60_000, max: 60 }), listarChats);
+// Mensajes
+router.get("/:chatId/mensajes", verificarToken, obtenerMensajes);
+router.post("/:chatId/mensajes", verificarToken, enviarMensaje);
 
-// Mensajes de un chat
-router.get("/:chatId/mensajes", verificarToken, rateLimit({ windowMs: 60_000, max: 60 }), obtenerMensajes);
+// Soft delete
+router.delete("/:chatId/me", verificarToken, eliminarParaMi);
 
-// Soft delete “para mí”
-router.delete("/:chatId/me", verificarToken, rateLimit({ windowMs: 60_000, max: 30 }), eliminarParaMi);
+// Favoritos
+router.patch("/:chatId/favorite", verificarToken, toggleFavorito);
+router.post("/:chatId/favorite", verificarToken, marcarFavorito);
+router.delete("/:chatId/favorite", verificarToken, quitarFavorito);
 
-// Favoritos (conversaciones)
-router.patch("/:chatId/favorite", verificarToken, rateLimit({ windowMs: 60_000, max: 30 }), toggleFavorito);
-router.post("/:chatId/favorite", verificarToken, rateLimit({ windowMs: 60_000, max: 30 }), marcarFavorito);
-router.delete("/:chatId/favorite", verificarToken, rateLimit({ windowMs: 60_000, max: 30 }), quitarFavorito);
+// Pins
+router.get("/:chatId/pins", verificarToken, obtenerPins);
+router.post("/messages/:messageId/pin", verificarToken, fijarMensaje);
+router.delete("/messages/:messageId/pin", verificarToken, desfijarMensaje);
 
-// Pins por usuario
-router.get("/:chatId/pins", verificarToken, rateLimit({ windowMs: 60_000, max: 60 }), obtenerPins);
-router.post("/messages/:messageId/pin", verificarToken, rateLimit({ windowMs: 60_000, max: 30 }), fijarMensaje);
-router.delete("/messages/:messageId/pin", verificarToken, rateLimit({ windowMs: 60_000, max: 30 }), desfijarMensaje);
+// Mensajes editar/borrar
+// 👉 Soporta multipart/form-data: campo 'file' opcional
+router.patch(
+  "/messages/:messageId",
+  verificarToken,
+  (req, res, next) => {
+    upload.single("file")(req, res, (err) => {
+      if (err) return res.status(400).json({ mensaje: err.message });
+      // Si file es inválido por tipo, multer no setea req.file; guardamos razón
+      if (!req.file && req.fileValidationError) {
+        return res.status(415).json({ mensaje: req.fileValidationError });
+      }
+      return next();
+    });
+  },
+  editarMensaje
+);
+router.delete("/messages/:messageId", verificarToken, eliminarMensaje);
 
-// === Mensajes: editar y borrar ===
-router.patch("/messages/:messageId", verificarToken, rateLimit({ windowMs: 60_000, max: 20 }), editarMensaje);
-router.delete("/messages/:messageId", verificarToken, rateLimit({ windowMs: 60_000, max: 20 }), eliminarMensaje);
-
-// === Bloquear / Desbloquear ===
-router.post("/:chatId/block", verificarToken, rateLimit({ windowMs: 60_000, max: 30 }), bloquearParaMi);
-router.delete("/:chatId/block", verificarToken, rateLimit({ windowMs: 60_000, max: 30 }), desbloquearParaMi);
-
-// === Admin (protegido) ===
-// router.get("/admin/:chatId/messages", verificarToken, requireAdmin, rateLimit({ windowMs: 60_000, max: 30 }), adminListarMensajes);
-// router.delete("/admin/:chatId", verificarToken, requireAdmin, rateLimit({ windowMs: 60_000, max: 10 }), adminEliminarChat);
+// Bloqueo
+router.post("/:chatId/block", verificarToken, bloquearParaMi);
+router.delete("/:chatId/block", verificarToken, desbloquearParaMi);
 
 module.exports = router;

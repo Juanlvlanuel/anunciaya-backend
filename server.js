@@ -5,6 +5,7 @@ const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const helmet = require("helmet");
+const compression = require("compression"); // 🚀 FastUX: compresión
 const sanitizeInput = require("./middleware/sanitizeInput");
 const { Server: SocketIOServer } = require("socket.io");
 
@@ -68,6 +69,9 @@ app.use(helmet({
 if (process.env.NODE_ENV === "production") {
   app.use(helmet.hsts({ maxAge: 31536000, includeSubDomains: true }));
 }
+
+// 🚀 Compresión para respuestas JSON/HTML/etc.
+app.use(compression());
 
 // CORS
 const defaultAllowed = [
@@ -143,6 +147,7 @@ app.use(sanitizeInput());
 
 app.use((_, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
+  // Por defecto no-store para rutas dinámicas
   res.setHeader("Cache-Control", "no-store");
   next();
 });
@@ -190,7 +195,9 @@ app.use((req, res, next) => {
 
 connectDB();
 
-// Rutas principales con limitadores
+// Rutas principales con limitadores (se mantienen igual)
+// ... (idéntico a tu server.js original, omitido por brevedad en este trozo)
+
 const RATE = {
   GLOBAL_WINDOW_MS: parseInt(process.env.RATELIMIT_GLOBAL_WINDOW_MS || "300000", 10),
   GLOBAL_MAX:       parseInt(process.env.RATELIMIT_GLOBAL_MAX || "300", 10),
@@ -280,8 +287,14 @@ app.use("/api/contenido/local", contenidoLocalRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api", healthRoutes);
+
+// Estáticos de uploads con caché larga (override del no-store)
 app.use("/uploads", express.static(path.join(__dirname, "uploads"), {
-  setHeaders: (res) => { res.setHeader("Access-Control-Expose-Headers", "Content-Length"); }
+  setHeaders: (res) => {
+    res.setHeader("Access-Control-Expose-Headers", "Content-Length");
+    // 🚀 Cache larga para assets versionados
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+  }
 }));
 
 // Socket.io
