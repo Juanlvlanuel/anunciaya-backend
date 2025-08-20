@@ -1,7 +1,11 @@
 // routes/usuarioRoutes-1.js
-// Corrige la colocación de /session (estaba anidada dentro de /admin-test) y no cambia tu lógica.
+// Añade POST /me/avatar con multer (campo 'avatar') y evita forzar application/json para esa ruta.
 
 const express = require("express");
+const path = require("path");
+const fs = require("fs");
+const multer = require("multer");
+
 const router = express.Router();
 
 const jwt = require("jsonwebtoken");
@@ -36,9 +40,31 @@ const clearRefreshCookieAll = (req, res) => {
   res.clearCookie(REFRESH_COOKIE_NAME, { ...base, path: "/api/usuarios/auth/refresh", maxAge: 0 });
 };
 
+// ======== Multer para /me/avatar ========
+const uploadDir = path.join(__dirname, "../uploads");
+if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, uploadDir),
+  filename: (_req, file, cb) => {
+    const safe = (file.originalname || "avatar").replace(/\s+/g, "_").replace(/[^\w.\-]/g, "");
+    cb(null, `${Date.now()}_${safe}`);
+  },
+});
+const ALLOWED = new Set(["image/jpeg", "image/png", "image/webp"]);
+const fileFilter = (req, file, cb) => {
+  if (ALLOWED.has(file.mimetype)) return cb(null, true);
+  req.fileValidationError = "Tipo de archivo no permitido (usa JPG, PNG o WEBP)";
+  return cb(null, false);
+};
+const upload = multer({ storage, fileFilter, limits: { fileSize: 15 * 1024 * 1024 } });
+
+// Middleware general: forzar JSON excepto en /me/avatar
 router.use(express.json({ limit: "5mb" }));
 router.use((req, res, next) => {
   const method = (req.method || "").toUpperCase();
+  const url = req.originalUrl || req.url || "";
+  if (url.includes("/me/avatar")) return next(); // <-- permitir multipart
   if (["POST", "PUT", "PATCH"].includes(method)) {
     const ct = (req.headers["content-type"] || "").toLowerCase();
     if (!ct.includes("application/json")) {
@@ -88,6 +114,25 @@ router.patch("/me",
   C.actualizarPerfil
 );
 
+// NUEVO: subir avatar (multipart/form-data, campo 'avatar')
+router.post("/me/avatar",
+  verificarToken,
+  (req, res, next) => {
+    upload.single("avatar")(req, res, (err) => {
+      if (err instanceof multer.MulterError) {
+        return res.status(400).json({ error: { code: "BAD_REQUEST", message: err.message } });
+      }
+      if (err) return res.status(415).json({ error: { code: "UNSUPPORTED_MEDIA_TYPE", message: "Tipo de archivo no permitido (usa JPG, PNG o WEBP)" } });
+      if (!req.file) {
+        const code = req.fileValidationError ? 415 : 400;
+        const message = req.fileValidationError || "Archivo requerido";
+        return res.status(code).json({ error: { code: code === 415 ? "UNSUPPORTED_MEDIA_TYPE" : "BAD_REQUEST", message } });
+      }
+      return C.subirAvatar(req, res, next);
+    });
+  }
+);
+
 // Búsqueda
 router.get("/search", C.searchUsuarios);
 
@@ -99,7 +144,7 @@ router.get("/admin-test", verificarToken, requireAdmin, (req, res) => {
   });
 });
 
-// ⬇︎ Sesión actual (fuera del handler anterior)
+// Sesión actual
 router.get("/session", verificarToken, C.getSession);
 
 // Refresh
@@ -151,7 +196,7 @@ router.post("/logout", async (req, res) => {
   try {
     const raw = req.cookies?.[REFRESH_COOKIE_NAME];
     if (raw) {
-      try {
+    try {
         const { jti, uid } = jwt.verify(raw, process.env.REFRESH_JWT_SECRET, {
           issuer: process.env.JWT_ISS,
           audience: process.env.JWT_AUD,

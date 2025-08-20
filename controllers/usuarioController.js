@@ -2,6 +2,15 @@
 // Ajuste: en registro por Google, no establecer contraseña "" para evitar validación.
 // Se mantiene toda la lógica existente.
 
+const fs = require("fs");
+const path = require("path");
+const sharp = require("sharp");
+
+sharp.concurrency(0);
+sharp.cache({ files: 64, items: 256, memory: 128 });
+
+
+
 const Usuario = require("../models/Usuario");
 const generarJWT = require("../helpers/generarJWT");
 const { OAuth2Client } = require("google-auth-library");
@@ -601,6 +610,105 @@ const getSession = async (req, res) => {
 };
 
 
+// === Avatar upload processing (añadido, no rompe lógica existente) ===
+const MAX_PIXELS = Number(process.env.UPLOAD_MAX_PIXELS || 50_000_000);
+const FULL_SIZE = { width: 1600, height: 1600 };
+const THUMB_SIZE = { width: 320, height: 320 };
+const ALLOWED_MIMES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+async function procesarImagen(absPath, mimetype) {
+  if (!mimetype || !ALLOWED_MIMES.has(mimetype)) {
+    try { fs.unlinkSync(absPath); } catch {}
+    const err = new Error("Tipo de archivo no permitido (usa JPG, PNG o WEBP)");
+    err.status = 415;
+    throw err;
+  }
+
+  const dir = path.dirname(absPath);
+  const baseName = path.basename(absPath, path.extname(absPath));
+
+  const input = sharp(absPath, { failOn: "none", sequentialRead: true, limitInputPixels: false }).rotate();
+  const info = await input.metadata();
+  const { width, height } = info;
+
+  if (width && height && width * height > MAX_PIXELS) {
+    try { fs.unlinkSync(absPath); } catch {}
+    const err = new Error("Imagen demasiado grande");
+    err.status = 413;
+    throw err;
+  }
+
+  let buffer;
+  try {
+    buffer = await input.toBuffer();
+  } catch {
+    try { fs.unlinkSync(absPath); } catch {}
+    const err = new Error("Formato de imagen no soportado");
+    err.status = 415;
+    throw err;
+  }
+
+  const finalName = `${baseName}.webp`;
+  const thumbName = `${baseName}_sm.webp`;
+  const finalPath = path.join(dir, finalName);
+  const thumbPath = path.join(dir, thumbName);
+
+  await Promise.all([
+    sharp(buffer).resize({ ...FULL_SIZE, fit: "inside", withoutEnlargement: true }).webp({ quality: 80, effort: 2 }).toFile(finalPath),
+    sharp(buffer).resize({ ...THUMB_SIZE, fit: "inside", withoutEnlargement: true }).webp({ quality: 78, effort: 2 }).toFile(thumbPath),
+  ]);
+
+  try { fs.unlinkSync(absPath); } catch {}
+
+  return { url: `/uploads/${finalName}`, thumbUrl: `/uploads/${thumbName}`, width, height };
+}
+
+// Nuevo controlador: subirAvatar
+const subirAvatar = async (req, res) => {
+  try {
+    const uid = req.usuario?._id || req.usuarioId;
+    if (!uid) return res.status(401).json({ mensaje: "No autenticado" });
+    if (!req.file) return res.status(400).json({ error: "Archivo requerido" });
+
+    const absPath = path.resolve(req.file.path);
+    const mimetype = req.file.mimetype || "";
+
+    const { url, thumbUrl } = await procesarImagen(absPath, mimetype);
+
+    // Obtener la URL previa ANTES de actualizar
+    let prevUrl = "";
+    try {
+      const prevDoc = await Usuario.findById(uid).select("fotoPerfil").lean();
+      prevUrl = prevDoc && prevDoc.fotoPerfil ? String(prevDoc.fotoPerfil) : "";
+    } catch {}
+
+    const actualizado = await Usuario.findByIdAndUpdate(
+      uid,
+      { $set: { fotoPerfil: url } },
+      { new: true, runValidators: true }
+    ).lean();
+
+    // Borrar foto anterior (si existía y apunta a /uploads y es distinta a la nueva)
+    try {
+      if (prevUrl && prevUrl.startsWith("/uploads/") && prevUrl !== url) {
+        const uploadsDir = path.join(__dirname, "..", "uploads");
+        const prevFile = prevUrl.replace("/uploads/", "");
+        const prevAbs = path.join(uploadsDir, prevFile);
+        const prevThumbAbs = prevAbs.replace(/(\.[a-z0-9]+)$/i, "_sm.webp");
+        try { fs.unlinkSync(prevAbs); } catch {}
+        try { fs.unlinkSync(prevThumbAbs); } catch {}
+      }
+    } catch {}
+
+    return res.json({ url, thumbUrl, usuario: actualizado });
+  } catch (e) {
+    const status = e.status || 500;
+    return res.status(status).json({ error: e.message || "Error al subir avatar" });
+  }
+};
+
+// === Fin añadido ===
+
 module.exports = {
   registrarUsuario,
   loginUsuario,
@@ -611,4 +719,6 @@ module.exports = {
   searchUsuarios,
   actualizarPerfil,
   getSession,
+
+  subirAvatar,
 };
