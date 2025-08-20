@@ -36,7 +36,7 @@ const clearRefreshCookieAll = (req, res) => {
   res.clearCookie(REFRESH_COOKIE_NAME, { ...base, path: "/api/usuarios/auth/refresh", maxAge: 0 });
 };
 
-router.use(express.json({ limit: "1.5mb" }));
+router.use(express.json({ limit: "5mb" }));
 router.use((req, res, next) => {
   const method = (req.method || "").toUpperCase();
   if (["POST", "PUT", "PATCH"].includes(method)) {
@@ -50,12 +50,12 @@ router.use((req, res, next) => {
 
 // ===== Cuenta / Auth =====
 router.post("/registro",
-  rejectExtra(["correo","email","contraseña","password","nombre","nombreCompleto","name","tipo","perfil"]),
+  rejectExtra(["correo", "email", "contraseña", "password", "nombre", "nombreCompleto", "name", "tipo", "perfil"]),
   C.registrarUsuario
 );
 
 router.post("/login",
-  rejectExtra(["email","password","correo","contraseña","login"]),
+  rejectExtra(["email", "password", "correo", "contraseña", "login"]),
   C.loginUsuario
 );
 
@@ -67,7 +67,7 @@ router.post("/seleccionar-perfil",
 
 // Google OAuth
 router.post("/auth/google",
-  rejectExtra(["credential","nonce","tipo","perfil"]),
+  rejectExtra(["credential", "nonce", "tipo", "perfil"]),
   C.autenticarConGoogle
 );
 router.get("/auth/google", C.iniciarGoogleOAuth);
@@ -75,7 +75,7 @@ router.get("/auth/google/callback", C.googleCallbackHandler);
 
 // Compatibilidad legacy
 router.post("/google",
-  rejectExtra(["credential","nonce","tipo","perfil"]),
+  rejectExtra(["credential", "nonce", "tipo", "perfil"]),
   C.autenticarConGoogle
 );
 router.get("/google", C.iniciarGoogleOAuth);
@@ -84,7 +84,7 @@ router.get("/google/callback", C.googleCallbackHandler);
 // Perfil (autenticado)
 router.patch("/me",
   verificarToken,
-  rejectExtra(["nombre","telefono","direccion","avatarUrl","fotoPerfil"]),
+  rejectExtra(["nombre", "telefono", "direccion", "fotoPerfil"]),
   C.actualizarPerfil
 );
 
@@ -157,7 +157,7 @@ router.post("/logout", async (req, res) => {
           audience: process.env.JWT_AUD,
         });
         await RefreshToken.updateOne({ jti, userId: uid }, { $set: { revokedAt: new Date() } });
-      } catch {}
+      } catch { }
       clearRefreshCookieAll(req, res);
     }
     res.json({ mensaje: "Sesión cerrada" });

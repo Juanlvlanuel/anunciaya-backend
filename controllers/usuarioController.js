@@ -197,6 +197,14 @@ const loginUsuario = async (req, res) => {
       return res.status(400).json({ mensaje: "Faltan credenciales" });
     }
 
+    // 🔒 Si el input contiene "@", debe ser un correo válido (usuario@dominio.com)
+    if (correoRaw.includes("@")) {
+      const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!EMAIL_RE.test(correoRaw)) {
+        return res.status(400).json({ mensaje: "El correo no es válido. Ingresa un formato correcto (ej. usuario@dominio.com)" });
+      }
+    }
+
     const correo = correoRaw.toLowerCase();
     let usuario = await Usuario.findOne({ correo }).select("+contraseña +failedLoginCount +lockUntil");
 
@@ -337,6 +345,12 @@ const autenticarConGoogle = async (req, res) => {
     let usuario = await Usuario.findOne({ correo: correoCI });
 
     if (usuario) {
+      // Si el cliente envía 'tipo' o 'perfil', está intentando REGISTRARSE con una cuenta ya existente
+      const attemptedRegister = Object.prototype.hasOwnProperty.call(req.body || {}, 'tipo') ||
+                                Object.prototype.hasOwnProperty.call(req.body || {}, 'perfil');
+      if (attemptedRegister) {
+        return res.status(409).json({ mensaje: 'Este correo ya tiene una cuenta registrada. Inicia sesión para continuar.' });
+      }
       let access;
       try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
       let refresh;
@@ -355,14 +369,17 @@ const autenticarConGoogle = async (req, res) => {
       });
     }
 
-    // Si no existe, requiere tipo/perfil para registro con Google
+    // Si no existe, requiere tipo/perfil para registro con Google (deben venir explícitamente)
+    const hasTipo = Object.prototype.hasOwnProperty.call(req.body || {}, 'tipo');
+    const hasPerfil = Object.prototype.hasOwnProperty.call(req.body || {}, 'perfil');
+    if (!hasTipo || !hasPerfil) {
+      return res.status(400).json({ mensaje: 'No existe ninguna cuenta Registrada con este Correo. Regístrate para Iniciar Sesión.' });
+    }
+    // Normaliza valores recibidos
     let { tipo, perfil } = extractTipoPerfil(req.body || {});
     if (!tipo || !perfil) {
-      return res.status(400).json({
-        mensaje: "No existe ninguna cuenta Registrada con este Correo. Regístrate para Iniciar Sesión."
-      });
+      return res.status(400).json({ mensaje: 'No existe ninguna cuenta Registrada con este Correo. Regístrate para Iniciar Sesión.' });
     }
-
     usuario = new Usuario({
       correo,
       nombre,
