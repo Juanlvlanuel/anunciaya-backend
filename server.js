@@ -22,6 +22,7 @@ const contenidoLocalRoutes = require("./routes/contenidoLocalRoutes");
 const chatRoutes = require("./routes/chatRoutes");
 const uploadRoutes = require("./routes/uploadRoutes");
 const healthRoutes = require("./routes/healthRoutes");
+const geoRoutes = require("./routes/geoRoutes");
 const { registerChatSocket } = require("./sockets/chatSocket");
 
 const app = express();
@@ -56,7 +57,7 @@ app.use(helmet({
       fontSrc: ["'self'", "https:", "data:"],
       formAction: ["'self'"],
       frameAncestors: ["'self'"],
-      imgSrc: ["'self'", "data:"],
+      imgSrc: ["'self'", "data:", "https:", "https://cdn.jsdelivr.net"],
       objectSrc: ["'none'"],
       scriptSrc: ["'self'"],
       scriptSrcAttr: ["'none'"],
@@ -286,6 +287,7 @@ app.use("/api/rifas", rifasRoutes);
 app.use("/api/contenido/local", contenidoLocalRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/upload", uploadRoutes);
+app.use("/api/geo", geoRoutes);
 app.use("/api", healthRoutes);
 
 // Estáticos de uploads con caché larga (override del no-store)

@@ -15,6 +15,34 @@ const {
   normalizePerfilToSchema,
 } = require("./_usuario.shared");
 
+const jwt = require("jsonwebtoken");
+const RefreshToken = require("../models/RefreshToken");
+const { revokeFamily, getAccessTTLSeconds } = require("../helpers/tokens");
+
+
+// === Utils locales para cookie de refresh ===
+const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
+function isLocalhost(req) {
+  try {
+    const host = String(req.headers?.host || "").split(":")[0];
+    return host === "localhost" || host === "127.0.0.1";
+  } catch (_) { return true; }
+}
+function getRefreshCookieOpts(req) {
+  const local = isLocalhost(req);
+  return {
+    httpOnly: true,
+    sameSite: local ? "lax" : "none",
+    secure: local ? false : true,
+    path: "/",
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+    domain: process.env.COOKIE_DOMAIN || undefined,
+  };
+}
+function clearRefreshCookieAll(req, res) {
+  try { res.clearCookie(REFRESH_COOKIE_NAME, getRefreshCookieOpts(req)); } catch (_) {}
+}
+
 /* ===================== REGISTRO TRADICIONAL ===================== */
 const registrarUsuario = async (req, res) => {
   try {
@@ -81,6 +109,16 @@ const registrarUsuario = async (req, res) => {
     });
 
     await nuevoUsuario.save();
+
+// === Añadido: envío de verificación tras registro ===
+try {
+  const { requestVerificationEmail } = require("./emailController");
+  // Emula un request mínimo para reutilizar la función
+  const fakeReq = { body: { userId: nuevoUsuario._id, correo: nuevoUsuario.correo } };
+  const fakeRes = { json: () => {}, status: () => ({ json: () => {} }) };
+  requestVerificationEmail(fakeReq, fakeRes);
+} catch (_) {}
+
 
     let access;
     try { access = signAccess(nuevoUsuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
@@ -208,7 +246,61 @@ const loginUsuario = async (req, res) => {
   }
 };
 
+
+
+/* ===================== REFRESH TOKEN (rotación segura) ===================== */
+const refreshToken = async (req, res) => {
+  try {
+    const raw = req.cookies?.[REFRESH_COOKIE_NAME];
+    if (!raw) return res.status(401).json({ mensaje: "No refresh token" });
+
+    let payload;
+    try {
+      payload = jwt.verify(raw, process.env.REFRESH_JWT_SECRET, {
+        issuer: process.env.JWT_ISS,
+        audience: process.env.JWT_AUD,
+      });
+    } catch (_) {
+      clearRefreshCookieAll(req, res);
+      return res.status(401).json({ mensaje: "Refresh inválido" });
+    }
+
+    const doc = await RefreshToken.findOne({ jti: payload.jti, userId: payload.uid });
+    const incomingHash = (typeof RefreshToken.hash === "function")
+      ? RefreshToken.hash(raw)
+      : require("crypto").createHash("sha256").update(String(raw)).digest("hex");
+
+    if (!doc || doc.revokedAt || doc.tokenHash !== incomingHash) {
+      try { await revokeFamily(payload.fam); } catch (_) {}
+      clearRefreshCookieAll(req, res);
+      return res.status(401).json({ mensaje: "Refresh reutilizado o inválido" });
+    }
+
+    doc.revokedAt = new Date();
+    await doc.save();
+
+    const access = signAccess(payload.uid);
+    const { refresh: newRefresh } = await signRefresh(payload.uid, payload.fam);
+
+    // set cookie nueva
+    try {
+      setRefreshCookie(req, res, newRefresh);
+    } catch (_) {
+      res.cookie(REFRESH_COOKIE_NAME, newRefresh, getRefreshCookieOpts(req));
+    }
+
+    const expiresIn = (typeof getAccessTTLSeconds === "function") ? getAccessTTLSeconds() : 900;
+    return res.json({ token: access, expiresIn, issuedAt: Date.now() });
+  } catch (e) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("❌ Error en refresh:", e);
+    }
+    return res.status(500).json({ mensaje: "Error en refresh" });
+  }
+};
+
 module.exports = {
   registrarUsuario,
   loginUsuario,
+  refreshToken,
 };
