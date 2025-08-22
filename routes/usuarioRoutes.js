@@ -159,9 +159,13 @@ function parseExpiresToSeconds(expStr) {
 
 router.post("/auth/refresh", rejectExtra([]), require("../controllers/authController").refreshToken);
 
-// Logout
+// Logout (mantén tu implementación existente en tu server)
 router.post("/logout", async (req, res) => {
   try {
+    const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
+    const clearCookieOpts = {
+      httpOnly: true, sameSite: "lax", secure: false, path: "/"
+    };
     const raw = req.cookies?.[REFRESH_COOKIE_NAME];
     if (raw) {
       try {
@@ -171,7 +175,7 @@ router.post("/logout", async (req, res) => {
         });
         await RefreshToken.updateOne({ jti, userId: uid }, { $set: { revokedAt: new Date() } });
       } catch {}
-      clearRefreshCookieAll(req, res);
+      try { res.clearCookie(REFRESH_COOKIE_NAME, clearCookieOpts); } catch {}
     }
     res.json({ mensaje: "Sesión cerrada" });
   } catch {
@@ -202,5 +206,31 @@ router.post("/reenviar-verificacion",
 router.get("/verificar-email", emailController.verifyEmail);
 router.get("/verificar-email/:token", emailController.verifyEmail);
 
+
+// ==== Teléfono (verificación OTP) ====
+// ✅ Punto clave: aseguramos que el require apunte al archivo real "phoneController.js"
+try {
+  const { enviarCodigo, verificarCodigo } = require("../controllers/phoneController");
+  router.post("/telefono/enviar-codigo",
+    verificarToken,
+    (req, res, next) => {
+      const ct = (req.headers["content-type"] || "").toLowerCase();
+      if (!ct.includes("application/json")) return res.status(415).json({ error: "Content-Type debe ser application/json" });
+      next();
+    },
+    enviarCodigo
+  );
+  router.post("/telefono/verificar-codigo",
+    verificarToken,
+    (req, res, next) => {
+      const ct = (req.headers["content-type"] || "").toLowerCase();
+      if (!ct.includes("application/json")) return res.status(415).json({ error: "Content-Type debe ser application/json" });
+      next();
+    },
+    verificarCodigo
+  );
+} catch (e) {
+  console.error("No se pudo montar rutas de teléfono:", e?.message);
+}
 
 module.exports = router;

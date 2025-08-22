@@ -34,6 +34,8 @@ const UsuarioSchema = new mongoose.Schema(
     },
     telefono: { type: String, trim: true, maxlength: 30, default: "" },
     direccion: { type: String, trim: true, maxlength: 240, default: "" },
+    telefonoVerificado: { type: Boolean, default: false },
+    telefonoVerificadoAt: { type: Date, default: null },
     tipo: { type: String, enum: ["usuario", "comerciante"], required: true },
     perfil: { type: String, required: true, default: "1" },
     nickname: { type: String, trim: true, unique: true, index: true },
