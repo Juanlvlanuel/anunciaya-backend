@@ -5,6 +5,7 @@
 const Chat = require("../models/Chat");
 const Mensaje = require("../models/Mensaje");
 const Usuario = require("../models/Usuario");
+const cloudinary = require("../utils/cloudinary");
 const { Types } = require("mongoose");
 
 /* ========= Helpers ========= */
@@ -105,6 +106,42 @@ function normalizeMensajeArchivos(m) {
   m.archivos = archivos.map(normalizeArchivo);
   return m;
 }
+
+/* ===== Cloudinary helpers ===== */
+function extractPublicIdFromUrl(u = "") {
+  try {
+    if (!u) return null;
+    const s = String(u);
+    const parts = s.split("/upload/");
+    if (parts.length < 2) return null;
+    let tail = parts[1];
+    const vMatch = tail.match(/\/v\d+\//);
+    if (vMatch) {
+      tail = tail.slice(tail.indexOf(vMatch[0]) + vMatch[0].length);
+    } else {
+      const firstSlash = tail.indexOf("/");
+      if (firstSlash >= 0) tail = tail.slice(firstSlash + 1);
+    }
+    tail = tail.replace(/\.[a-z0-9]+$/i, "");
+    try { tail = decodeURIComponent(tail); } catch {}
+    return tail;
+  } catch {
+    return null;
+  }
+}
+
+async function destroyCloudinaryByArchivo(a = {}) {
+  try {
+    const pid = a.public_id || extractPublicIdFromUrl(a.url || a.fileUrl || a.src || a.location || a.ruta || a.path || a.thumbUrl || a.thumbnail || "");
+    if (!pid) return { ok: false, reason: "no_public_id" };
+    const res = await cloudinary.uploader.destroy(pid, { invalidate: true, resource_type: "image" });
+    return { ok: true, result: res };
+  } catch (e) {
+    return { ok: false, error: e?.message || String(e) };
+  }
+}
+
+
 
 /* =========================
    Crear / obtener chat 1:1
@@ -590,6 +627,10 @@ async function editarMensaje(req, res) {
     }
 
     if (eliminarImagen) {
+      const archivos = Array.isArray(msg.archivos) ? msg.archivos : [];
+      if (archivos.length) {
+        try { await Promise.allSettled(archivos.map((a) => destroyCloudinaryByArchivo(a))); } catch {}
+      }
       msg.archivos = [];
     }
 
@@ -614,6 +655,8 @@ async function editarMensaje(req, res) {
   }
 }
 
+
+
 async function eliminarMensaje(req, res) {
   try {
     const uid = getAuthUserId(req);
@@ -630,6 +673,14 @@ async function eliminarMensaje(req, res) {
       return res.status(403).json({ mensaje: "Solo puedes borrar tus propios mensajes" });
     }
 
+    // ✅ Al borrar el mensaje completo, elimina sus adjuntos en Cloudinary (múltiples)
+    const archivos = Array.isArray(msg.archivos) ? msg.archivos : [];
+    if (archivos.length) {
+      try {
+        await Promise.allSettled(archivos.map((a) => destroyCloudinaryByArchivo(a)));
+      } catch {}
+    }
+
     await Mensaje.deleteOne({ _id: messageId });
 
     return res.json({ ok: true });
@@ -638,6 +689,10 @@ async function eliminarMensaje(req, res) {
     return res.status(500).json({ mensaje: "Error al eliminar mensaje" });
   }
 }
+
+
+
+
 
 /* =========================
    BLOQUEAR / DESBLOQUEAR
