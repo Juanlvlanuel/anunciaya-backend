@@ -1,11 +1,15 @@
-// controllers/authController.js
-// Registro y Login tradicionales.
-// (Lógica copiada de tu usuarioController actual, sin cambios de comportamiento.)
+// controllers/authController-1.js
+// Registro, Login y Refresh con rotación segura y "grace path" para refresh faltante.
+// - Si el refresh verifica pero no existe registro en DB (primera migración, limpieza, etc.),
+//   se crea on-the-fly y se rota sin marcar "reutilizado".
 
+const jwt = require("jsonwebtoken");
+const RefreshToken = require("../models/RefreshToken");
+const { signAccess, signRefresh, revokeFamily, hashToken, getAccessTTLSeconds } = require("../helpers/tokens");
+
+// Reutilizamos helpers y modelo de Usuario desde tu shared
 const {
   Usuario,
-  signAccess,
-  signRefresh,
   setRefreshCookie,
   EMAIL_RE,
   norm,
@@ -15,19 +19,13 @@ const {
   normalizePerfilToSchema,
 } = require("./_usuario.shared");
 
-const jwt = require("jsonwebtoken");
-const RefreshToken = require("../models/RefreshToken");
-const { revokeFamily, getAccessTTLSeconds } = require("../helpers/tokens");
-
-
-// === Utils locales para cookie de refresh ===
 const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
-function isLocalhost(req) {
+const isLocalhost = (req) => {
   try {
     const host = String(req.headers?.host || "").split(":")[0];
     return host === "localhost" || host === "127.0.0.1";
   } catch (_) { return true; }
-}
+};
 function getRefreshCookieOpts(req) {
   const local = isLocalhost(req);
   return {
@@ -110,20 +108,16 @@ const registrarUsuario = async (req, res) => {
 
     await nuevoUsuario.save();
 
-// === Añadido: envío de verificación tras registro ===
-try {
-  const { requestVerificationEmail } = require("./emailController");
-  // Emula un request mínimo para reutilizar la función
-  const fakeReq = { body: { userId: nuevoUsuario._id, correo: nuevoUsuario.correo } };
-  const fakeRes = { json: () => {}, status: () => ({ json: () => {} }) };
-  requestVerificationEmail(fakeReq, fakeRes);
-} catch (_) {}
+    // Envío de verificación (no bloqueante)
+    try {
+      const { requestVerificationEmail } = require("./emailController");
+      const fakeReq = { body: { userId: nuevoUsuario._id, correo: nuevoUsuario.correo } };
+      const fakeRes = { json: () => {}, status: () => ({ json: () => {} }) };
+      requestVerificationEmail(fakeReq, fakeRes);
+    } catch (_) {}
 
-
-    let access;
-    try { access = signAccess(nuevoUsuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
-    let refresh;
-    try { const tmp = await signRefresh(nuevoUsuario._id); const { refresh: r } = tmp; refresh = r; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
+    const access = signAccess(nuevoUsuario._id);
+    const { refresh } = await signRefresh(nuevoUsuario._id);
     setRefreshCookie(req, res, refresh);
 
     return res.status(201).json({
@@ -179,7 +173,6 @@ const loginUsuario = async (req, res) => {
       return res.status(400).json({ mensaje: "Faltan credenciales" });
     }
 
-    // 🔒 Si el input contiene "@", debe ser un correo válido (usuario@dominio.com)
     if (correoRaw.includes("@")) {
       const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
       if (!EMAIL_RE.test(correoRaw)) {
@@ -203,7 +196,6 @@ const loginUsuario = async (req, res) => {
       const minutosBloqueo = Usuario.BLOQUEO_MINUTOS || 3;
 
       const nextFails = (usuario.failedLoginCount || 0) + 1;
-
       if (nextFails >= maxIntentos) {
         usuario.failedLoginCount = 0;
         usuario.lockUntil = new Date(Date.now() + minutosBloqueo * 60 * 1000);
@@ -211,7 +203,6 @@ const loginUsuario = async (req, res) => {
         usuario.failedLoginCount = nextFails;
         usuario.lockUntil = null;
       }
-
       await usuario.save({ validateModifiedOnly: true });
 
       return res.status(401).json({
@@ -227,10 +218,8 @@ const loginUsuario = async (req, res) => {
       await usuario.save({ validateModifiedOnly: true });
     }
 
-    let access;
-    try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
-    let refresh;
-    try { const tmp = await signRefresh(usuario._id); const { refresh: r } = tmp; refresh = r; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
+    const access = signAccess(usuario._id);
+    const { refresh } = await signRefresh(usuario._id);
     setRefreshCookie(req, res, refresh);
 
     const actualizado = await Usuario.findById(usuario._id).lean();
@@ -246,9 +235,7 @@ const loginUsuario = async (req, res) => {
   }
 };
 
-
-
-/* ===================== REFRESH TOKEN (rotación segura) ===================== */
+/* ===================== REFRESH TOKEN (rotación segura + grace) ===================== */
 const refreshToken = async (req, res) => {
   try {
     const raw = req.cookies?.[REFRESH_COOKIE_NAME];
@@ -265,10 +252,24 @@ const refreshToken = async (req, res) => {
       return res.status(401).json({ mensaje: "Refresh inválido" });
     }
 
-    const doc = await RefreshToken.findOne({ jti: payload.jti, userId: payload.uid });
-    const incomingHash = (typeof RefreshToken.hash === "function")
-      ? RefreshToken.hash(raw)
-      : require("crypto").createHash("sha256").update(String(raw)).digest("hex");
+    const incomingHash = hashToken(raw);
+    let doc = await RefreshToken.findOne({ jti: payload.jti, userId: payload.uid });
+
+    if (!doc) {
+      // ⚠️ Grace path: si no existe registro pero el JWT es válido (p.ej. tras limpiar colección),
+      // creamos el doc y continuamos; no lo tratamos como reutilización maliciosa.
+      try {
+        await RefreshToken.create({
+          userId: payload.uid,
+          jti: payload.jti,
+          family: payload.fam,
+          tokenHash: incomingHash,
+          expiresAt: new Date(payload.exp * 1000),
+          revokedAt: null,
+        });
+        doc = await RefreshToken.findOne({ jti: payload.jti, userId: payload.uid });
+      } catch (_) {}
+    }
 
     if (!doc || doc.revokedAt || doc.tokenHash !== incomingHash) {
       try { await revokeFamily(payload.fam); } catch (_) {}
@@ -276,21 +277,21 @@ const refreshToken = async (req, res) => {
       return res.status(401).json({ mensaje: "Refresh reutilizado o inválido" });
     }
 
+    // Revocar el usado y rotar
     doc.revokedAt = new Date();
     await doc.save();
 
-    const access = signAccess(payload.uid);
+    const token = signAccess(payload.uid);
     const { refresh: newRefresh } = await signRefresh(payload.uid, payload.fam);
 
-    // set cookie nueva
     try {
       setRefreshCookie(req, res, newRefresh);
     } catch (_) {
       res.cookie(REFRESH_COOKIE_NAME, newRefresh, getRefreshCookieOpts(req));
     }
 
-    const expiresIn = (typeof getAccessTTLSeconds === "function") ? getAccessTTLSeconds() : 900;
-    return res.json({ token: access, expiresIn, issuedAt: Date.now() });
+    const expiresIn = getAccessTTLSeconds();
+    return res.json({ token, expiresIn, issuedAt: Date.now() });
   } catch (e) {
     if (process.env.NODE_ENV !== "production") {
       console.error("❌ Error en refresh:", e);

@@ -30,6 +30,8 @@ const { registerChatSocket } = require("./sockets/chatSocket");
 const app = express();
 const server = http.createServer(app);
 
+const mediaCleanupRoutes = require("./routes/mediaCleanupRoutes");
+
 // --- Basic health & root routes for platform health checks ---
 app.get("/", (req, res) => {
   res.status(200).json({ status: "ok", service: "anunciaya-backend", time: new Date().toISOString() });
@@ -289,6 +291,9 @@ app.use("/api/upload", uploadRoutes);
 app.use("/api/geo", geoRoutes);
 app.use("/api/media", mediaRoutes); // 👈 NUEVO
 app.use("/api", healthRoutes);
+app.use("/api/media", mediaCleanupRoutes);
+
+
 
 // Estáticos de uploads con caché larga (override del no-store)
 app.use("/uploads", express.static(path.join(__dirname, "uploads"), {
