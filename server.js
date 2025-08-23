@@ -1,3 +1,4 @@
+// server-1.js
 require("dotenv").config();
 const path = require("path");
 const http = require("http");
@@ -23,6 +24,7 @@ const chatRoutes = require("./routes/chatRoutes");
 const uploadRoutes = require("./routes/uploadRoutes");
 const healthRoutes = require("./routes/healthRoutes");
 const geoRoutes = require("./routes/geoRoutes");
+const mediaRoutes = require("./routes/mediaRoutes"); // 👈 NUEVO
 const { registerChatSocket } = require("./sockets/chatSocket");
 
 const app = express();
@@ -196,9 +198,6 @@ app.use((req, res, next) => {
 
 connectDB();
 
-// Rutas principales con limitadores (se mantienen igual)
-// ... (idéntico a tu server.js original, omitido por brevedad en este trozo)
-
 const RATE = {
   GLOBAL_WINDOW_MS: parseInt(process.env.RATELIMIT_GLOBAL_WINDOW_MS || "300000", 10),
   GLOBAL_MAX:       parseInt(process.env.RATELIMIT_GLOBAL_MAX || "300", 10),
@@ -288,6 +287,7 @@ app.use("/api/contenido/local", contenidoLocalRoutes);
 app.use("/api/chat", chatRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/geo", geoRoutes);
+app.use("/api/media", mediaRoutes); // 👈 NUEVO
 app.use("/api", healthRoutes);
 
 // Estáticos de uploads con caché larga (override del no-store)
