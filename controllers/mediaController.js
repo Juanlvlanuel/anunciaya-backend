@@ -1,15 +1,9 @@
 // controllers/mediaController-1.js
-// Firma de Cloudinary con lógica para:
-//  - Avatar de usuario: fuerza public_id="avatar", overwrite=true, invalidate=true
-//  - Imágenes de ChatYA (preset chat_image): organiza por folder anunciaya/<env>/chats/<chatId>/images/<yyyy>/<mm>
-//    y usa public_id=<messageId>, con tags/context útiles.
-//  - NO se firma upload_preset. Solo: timestamp, folder, public_id?, overwrite?, invalidate?, tags?, context?
-//
-// Body esperado (según caso):
-//  { upload_preset, folder?, env?, tags?, context?, public_id?, overwrite?, invalidate? }
-//  // Chat extra:
-//  { chatId, messageId, senderId }
-//
+// Firma de Cloudinary con mejoras:
+// - upload_preset ahora es opcional; por defecto "users_avatar" (caso avatar).
+// - Avatar: fuerza public_id="avatar", overwrite=true, invalidate=true cuando folder apunta a .../users/<uid>/avatar
+// - Chat: mantiene lógica existente para preset "chat_image".
+
 const crypto = require("crypto");
 require("../utils/cloudinary"); // Inicializa config/env
 
@@ -42,8 +36,9 @@ async function signUpload(req, res) {
       senderId,
     } = req.body || {};
 
+    // 🔧 Hacer upload_preset opcional: default para avatar
     if (!upload_preset) {
-      return res.status(400).json({ error: "Falta 'upload_preset'." });
+      upload_preset = "users_avatar";
     }
 
     const now = new Date();
@@ -52,7 +47,6 @@ async function signUpload(req, res) {
     const finalEnv = env || (process.env.NODE_ENV === "production" ? "prod" : "dev");
 
     // === Caso AVATAR ===
-    // Detecta si la carpeta apunta a .../users/<uid>/avatar
     const isAvatarFolder = folder && /\/users\/[^/]+\/avatar\/?$/.test(String(folder));
     if (isAvatarFolder) {
       public_id = "avatar";
@@ -61,11 +55,9 @@ async function signUpload(req, res) {
     }
 
     // === Caso CHAT ===
-    // Si el preset es chat_image y viene chatId -> construir folder y metadata
     if (upload_preset === "chat_image" && chatId) {
       folder = `anunciaya/${finalEnv}/chats/${chatId}/images/${yyyy}/${mm}`;
       if (messageId) public_id = String(messageId);
-      // Tags y context por defecto si no vienen
       const defaultTags = [
         "app:anunciaya",
         `env:${finalEnv}`,
@@ -107,7 +99,7 @@ async function signUpload(req, res) {
       apiKey: process.env.CLOUDINARY_API_KEY,
       timestamp: paramsToSign.timestamp,
       signature,
-      upload_preset, // devolver al cliente, pero NO va en la firma
+      upload_preset,
       ...(folder ? { folder } : {}),
       ...(public_id ? { public_id } : {}),
       ...(overwrite ? { overwrite: true } : {}),
