@@ -1,8 +1,8 @@
-// controllers/mediaController-1.js
-// Firma de Cloudinary con mejoras:
-// - upload_preset ahora es opcional; por defecto "users_avatar" (caso avatar).
-// - Avatar: fuerza public_id="avatar", overwrite=true, invalidate=true cuando folder apunta a .../users/<uid>/avatar
-// - Chat: mantiene lógica existente para preset "chat_image".
+// controllers/mediaController-3.js
+// Cloudinary signed uploads — respuesta sin `upload_preset` (avatar y chat).
+// - Mantiene `upload_preset` SOLO para lógica interna (no se expone al cliente).
+// - Avatar: folder .../users/<uid>/avatar  -> public_id="avatar", overwrite/invalidate true.
+// - Chat:   preset "chat_image" o si llega chatId -> organiza en anunciaya/<env>/chats/<chatId>/images/<yyyy>/<mm>.
 
 const crypto = require("crypto");
 require("../utils/cloudinary"); // Inicializa config/env
@@ -11,7 +11,11 @@ function signParams(params) {
   const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "");
   const sorted = entries.sort(([a], [b]) => a.localeCompare(b));
   const base = sorted.map(([k, v]) => `${k}=${v}`).join("&");
-  return crypto.createHash("sha1").update(base + process.env.CLOUDINARY_API_SECRET).digest("hex");
+  return crypto.createHash("sha1").update(base + process.env.CLOUDINARY_API_SECRET).digest("sha1");
+}
+
+function sha1(s) {
+  return crypto.createHash("sha1").update(s).digest("hex");
 }
 
 function month2(mm) {
@@ -22,7 +26,7 @@ function month2(mm) {
 async function signUpload(req, res) {
   try {
     let {
-      upload_preset,
+      upload_preset, // usado solo para lógica interna (no se devuelve)
       folder,
       env,
       tags,
@@ -30,32 +34,27 @@ async function signUpload(req, res) {
       public_id,
       overwrite,
       invalidate,
-      // Chat
       chatId,
       messageId,
       senderId,
     } = req.body || {};
-
-    // 🔧 Hacer upload_preset opcional: default para avatar
-    if (!upload_preset) {
-      upload_preset = "users_avatar";
-    }
 
     const now = new Date();
     const yyyy = now.getUTCFullYear();
     const mm = month2(now.getUTCMonth() + 1);
     const finalEnv = env || (process.env.NODE_ENV === "production" ? "prod" : "dev");
 
-    // === Caso AVATAR ===
+    // === AVATAR ===
     const isAvatarFolder = folder && /\/users\/[^/]+\/avatar\/?$/.test(String(folder));
     if (isAvatarFolder) {
       public_id = "avatar";
       overwrite = true;
       invalidate = true;
+      upload_preset = "users_avatar"; // interno
     }
 
-    // === Caso CHAT ===
-    if (upload_preset === "chat_image" && chatId) {
+    // === CHAT ===
+    if ((upload_preset === "chat_image" || chatId) && chatId) {
       folder = `anunciaya/${finalEnv}/chats/${chatId}/images/${yyyy}/${mm}`;
       if (messageId) public_id = String(messageId);
       const defaultTags = [
@@ -75,7 +74,7 @@ async function signUpload(req, res) {
       }
     }
 
-    // Normalización de tags/context para firma
+    // === Firma ===
     const paramsToSign = {
       timestamp: Math.floor(now.getTime() / 1000),
       ...(folder ? { folder } : {}),
@@ -91,15 +90,18 @@ async function signUpload(req, res) {
           }
         : {}),
     };
-
-    const signature = signParams(paramsToSign);
+    const baseStr = Object.entries(paramsToSign)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}=${v}`)
+      .join("&");
+    const signature = sha1(baseStr + process.env.CLOUDINARY_API_SECRET);
 
     return res.json({
       cloudName: process.env.CLOUDINARY_CLOUD_NAME,
       apiKey: process.env.CLOUDINARY_API_KEY,
       timestamp: paramsToSign.timestamp,
       signature,
-      upload_preset,
+      // ❌ Nunca devolvemos upload_preset
       ...(folder ? { folder } : {}),
       ...(public_id ? { public_id } : {}),
       ...(overwrite ? { overwrite: true } : {}),
