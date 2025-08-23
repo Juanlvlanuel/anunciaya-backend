@@ -1,20 +1,14 @@
-// controllers/mediaController-3.js
+// controllers/mediaController-4.js
 // Cloudinary signed uploads — respuesta sin `upload_preset` (avatar y chat).
-// - Mantiene `upload_preset` SOLO para lógica interna (no se expone al cliente).
-// - Avatar: folder .../users/<uid>/avatar  -> public_id="avatar", overwrite/invalidate true.
-// - Chat:   preset "chat_image" o si llega chatId -> organiza en anunciaya/<env>/chats/<chatId>/images/<yyyy>/<mm>.
+// - Usa solo SHA1 en hex correctamente (sin digest("sha1")).
+// - Avatar: folder .../users/<uid>/avatar -> public_id="avatar", overwrite/invalidate true.
+// - Chat: si viene chatId (o preset interno chat_image) arma folder/tags/context.
+// - Nunca expone `upload_preset` al cliente.
 
 const crypto = require("crypto");
 require("../utils/cloudinary"); // Inicializa config/env
 
-function signParams(params) {
-  const entries = Object.entries(params).filter(([, v]) => v !== undefined && v !== null && v !== "");
-  const sorted = entries.sort(([a], [b]) => a.localeCompare(b));
-  const base = sorted.map(([k, v]) => `${k}=${v}`).join("&");
-  return crypto.createHash("sha1").update(base + process.env.CLOUDINARY_API_SECRET).digest("sha1");
-}
-
-function sha1(s) {
+function sha1Hex(s) {
   return crypto.createHash("sha1").update(s).digest("hex");
 }
 
@@ -26,7 +20,7 @@ function month2(mm) {
 async function signUpload(req, res) {
   try {
     let {
-      upload_preset, // usado solo para lógica interna (no se devuelve)
+      upload_preset, // solo guía interna (no se devuelve)
       folder,
       env,
       tags,
@@ -34,6 +28,7 @@ async function signUpload(req, res) {
       public_id,
       overwrite,
       invalidate,
+      // Chat
       chatId,
       messageId,
       senderId,
@@ -90,11 +85,13 @@ async function signUpload(req, res) {
           }
         : {}),
     };
+
     const baseStr = Object.entries(paramsToSign)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([k, v]) => `${k}=${v}`)
       .join("&");
-    const signature = sha1(baseStr + process.env.CLOUDINARY_API_SECRET);
+
+    const signature = sha1Hex(baseStr + process.env.CLOUDINARY_API_SECRET);
 
     return res.json({
       cloudName: process.env.CLOUDINARY_CLOUD_NAME,
