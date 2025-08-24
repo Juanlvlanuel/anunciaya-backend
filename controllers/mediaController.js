@@ -28,6 +28,7 @@ async function signUpload(req, res) {
       public_id,
       overwrite,
       invalidate,
+
       // Chat
       chatId,
       messageId,
@@ -79,11 +80,12 @@ async function signUpload(req, res) {
       ...(tags ? { tags: Array.isArray(tags) ? tags.join(",") : String(tags) } : {}),
       ...(context
         ? {
-            context: Object.entries(context)
-              .map(([k, v]) => `${k}=${v}`)
-              .join("|"),
-          }
+          context: Object.entries(context)
+            .map(([k, v]) => `${k}=${v}`)
+            .join("|"),
+        }
         : {}),
+      transformation: "c_limit,w_1600,h_1600,q_auto:good,f_auto", // 👈 compresión obligatoria
     };
 
     const baseStr = Object.entries(paramsToSign)
@@ -98,7 +100,7 @@ async function signUpload(req, res) {
       apiKey: process.env.CLOUDINARY_API_KEY,
       timestamp: paramsToSign.timestamp,
       signature,
-      // ❌ Nunca devolvemos upload_preset
+      transformation: "c_limit,w_1600,h_1600,q_auto:good,f_auto", // 👈 se devuelve al frontend
       ...(folder ? { folder } : {}),
       ...(public_id ? { public_id } : {}),
       ...(overwrite ? { overwrite: true } : {}),
@@ -112,4 +114,39 @@ async function signUpload(req, res) {
   }
 }
 
-module.exports = { signUpload };
+
+module.exports = { signUpload, destroyAsset };
+
+function extractPublicIdFromUrl(u = "") {
+  try {
+    if (!u) return null;
+    const s = String(u);
+    const parts = s.split("/upload/");
+    if (parts.length < 2) return null;
+    let tail = parts[1];
+    const vMatch = tail.match(/\/v\d+\//);
+    if (vMatch) {
+      tail = tail.slice(tail.indexOf(vMatch[0]) + vMatch[0].length);
+    } else {
+      const firstSlash = tail.indexOf("/");
+      if (firstSlash >= 0) tail = tail.slice(firstSlash + 1);
+    }
+    tail = tail.replace(/\.[a-z0-9]+$/i, "");
+    try { tail = decodeURIComponent(tail); } catch { }
+    return tail;
+  } catch { return null; }
+}
+async function destroyAsset(req, res) {
+  try {
+    const cloudinary = require("../utils/cloudinary");
+    const { public_id, url } = req.body || {};
+    let pid = public_id || null;
+    if (!pid && url) pid = extractPublicIdFromUrl(url);
+    if (!pid) return res.status(400).json({ error: "Falta public_id o url" });
+    const out = await cloudinary.uploader.destroy(pid, { invalidate: true, resource_type: "image" });
+    return res.json({ ok: true, public_id: pid, result: out });
+  } catch (err) {
+    console.error("Destroy Cloudinary error:", err);
+    return res.status(500).json({ error: "No se pudo eliminar en Cloudinary" });
+  }
+}

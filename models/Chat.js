@@ -40,6 +40,9 @@ const ChatSchema = new Schema(
     // === BLOQUEO por usuario (clave que faltaba) ===
     blockedBy: [{ type: Schema.Types.ObjectId, ref: "Usuario", default: [] }],
 
+        // === Fondo por chat (persistente) ===
+    backgroundUrl: { type: String, default: "" },
+
     // === Meta para ordenar y mostrar previas ===
     ultimoMensaje: { type: String, default: "" },
     ultimoMensajeAt: { type: Date, default: null },

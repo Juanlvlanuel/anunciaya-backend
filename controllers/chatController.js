@@ -738,6 +738,31 @@ async function desbloquearParaMi(req, res) {
   }
 }
 
+
+async function setBackground(req, res) {
+  try {
+    const uid = String(req.usuario?._id || req.usuarioId || "");
+    const { chatId } = req.params;
+    const { backgroundUrl } = req.body || {};
+    if (!chatId) return res.status(400).json({ mensaje: "chatId inválido" });
+
+    const chat = await Chat.findById(chatId);
+    if (!chat) return res.status(404).json({ mensaje: "Chat no encontrado" });
+    const participants = (chat.participantes || []).map((x) => String(x));
+    if (!participants.includes(String(uid))) {
+      return res.status(403).json({ mensaje: "No autorizado" });
+    }
+
+    chat.backgroundUrl = String(backgroundUrl || "");
+    await chat.save();
+
+    return res.json({ ok: true, backgroundUrl: chat.backgroundUrl });
+  } catch (e) {
+    console.error("setBackground:", e);
+    return res.status(500).json({ mensaje: "Error al actualizar fondo" });
+  }
+}
+
 module.exports = {
   ensurePrivado,
   listarChats,
@@ -758,4 +783,5 @@ module.exports = {
   // bloqueo
   bloquearParaMi,
   desbloquearParaMi,
+  setBackground,
 };

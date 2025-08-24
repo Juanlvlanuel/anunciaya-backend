@@ -22,6 +22,7 @@ const {
   eliminarMensaje,
   bloquearParaMi,
   desbloquearParaMi,
+  setBackground,
 } = require("../controllers/chatController");
 
 // -------- Multer (disco) para edición con imagen --------
@@ -65,6 +66,9 @@ router.get("/", verificarToken, listarChats);
 // Mensajes
 router.get("/:chatId/mensajes", verificarToken, obtenerMensajes);
 router.post("/:chatId/mensajes", verificarToken, enviarMensaje);
+
+// Fondo por chat (persistente)
+router.patch("/:chatId/background", verificarToken, setBackground);
 
 // Soft delete
 router.delete("/:chatId/me", verificarToken, eliminarParaMi);

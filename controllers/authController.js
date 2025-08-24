@@ -1,13 +1,12 @@
 // controllers/authController-1.js
 // Registro, Login y Refresh con rotación segura y "grace path" para refresh faltante.
-// - Si el refresh verifica pero no existe registro en DB (primera migración, limpieza, etc.),
-//   se crea on-the-fly y se rota sin marcar "reutilizado".
+// Ajustes: endurecemos set de cookie en refresh y añadimos no-store en la respuesta.
+// También normalizamos los campos { token, expiresIn, issuedAt } para el frontend.
 
 const jwt = require("jsonwebtoken");
 const RefreshToken = require("../models/RefreshToken");
 const { signAccess, signRefresh, revokeFamily, hashToken, getAccessTTLSeconds } = require("../helpers/tokens");
 
-// Reutilizamos helpers y modelo de Usuario desde tu shared
 const {
   Usuario,
   setRefreshCookie,
@@ -39,6 +38,17 @@ function getRefreshCookieOpts(req) {
 }
 function clearRefreshCookieAll(req, res) {
   try { res.clearCookie(REFRESH_COOKIE_NAME, getRefreshCookieOpts(req)); } catch (_) {}
+}
+function ensureSetRefreshCookie(req, res, token) {
+  try {
+    setRefreshCookie(req, res, token);
+  } catch {
+    res.cookie(REFRESH_COOKIE_NAME, token, getRefreshCookieOpts(req));
+  }
+  try {
+    // exponer longitud si pasa por proxy
+    res.setHeader("Access-Control-Expose-Headers", "Content-Length");
+  } catch {}
 }
 
 /* ===================== REGISTRO TRADICIONAL ===================== */
@@ -108,7 +118,6 @@ const registrarUsuario = async (req, res) => {
 
     await nuevoUsuario.save();
 
-    // Envío de verificación (no bloqueante)
     try {
       const { requestVerificationEmail } = require("./emailController");
       const fakeReq = { body: { userId: nuevoUsuario._id, correo: nuevoUsuario.correo } };
@@ -118,11 +127,14 @@ const registrarUsuario = async (req, res) => {
 
     const access = signAccess(nuevoUsuario._id);
     const { refresh } = await signRefresh(nuevoUsuario._id);
-    setRefreshCookie(req, res, refresh);
+    ensureSetRefreshCookie(req, res, refresh);
 
+    res.setHeader("Cache-Control", "no-store");
     return res.status(201).json({
       mensaje: "Registro Exitoso",
       token: access,
+      expiresIn: getAccessTTLSeconds(),
+      issuedAt: Date.now(),
       usuario: {
         _id: nuevoUsuario._id,
         nombre: nuevoUsuario.nombre,
@@ -220,13 +232,14 @@ const loginUsuario = async (req, res) => {
 
     const access = signAccess(usuario._id);
     const { refresh } = await signRefresh(usuario._id);
-    setRefreshCookie(req, res, refresh);
+    ensureSetRefreshCookie(req, res, refresh);
 
     const actualizado = await Usuario.findById(usuario._id).lean();
     if (!actualizado) {
       return res.status(404).json({ mensaje: "Usuario no encontrado después de login" });
     }
-    return res.json({ token: access, usuario: actualizado });
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ token: access, expiresIn: getAccessTTLSeconds(), issuedAt: Date.now(), usuario: actualizado });
   } catch (error) {
     if (process.env.NODE_ENV !== "production") {
       console.error("❌ Error en login:", error);
@@ -256,8 +269,6 @@ const refreshToken = async (req, res) => {
     let doc = await RefreshToken.findOne({ jti: payload.jti, userId: payload.uid });
 
     if (!doc) {
-      // ⚠️ Grace path: si no existe registro pero el JWT es válido (p.ej. tras limpiar colección),
-      // creamos el doc y continuamos; no lo tratamos como reutilización maliciosa.
       try {
         await RefreshToken.create({
           userId: payload.uid,
@@ -284,13 +295,10 @@ const refreshToken = async (req, res) => {
     const token = signAccess(payload.uid);
     const { refresh: newRefresh } = await signRefresh(payload.uid, payload.fam);
 
-    try {
-      setRefreshCookie(req, res, newRefresh);
-    } catch (_) {
-      res.cookie(REFRESH_COOKIE_NAME, newRefresh, getRefreshCookieOpts(req));
-    }
+    ensureSetRefreshCookie(req, res, newRefresh);
 
     const expiresIn = getAccessTTLSeconds();
+    res.setHeader("Cache-Control", "no-store");
     return res.json({ token, expiresIn, issuedAt: Date.now() });
   } catch (e) {
     if (process.env.NODE_ENV !== "production") {

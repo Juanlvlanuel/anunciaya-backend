@@ -1,7 +1,7 @@
 // routes/mediaRoutes.js (CommonJS)
 const express = require("express");
 const verificarToken = require("../middleware/verificarToken");
-const { signUpload } = require("../controllers/mediaController");
+const { signUpload, destroyAsset } = require("../controllers/mediaController");
 
 const router = express.Router();
 
@@ -9,3 +9,6 @@ const router = express.Router();
 router.post("/sign", verificarToken, signUpload);
 
 module.exports = router;
+
+// Eliminar asset en Cloudinary
+router.post("/destroy", destroyAsset);
