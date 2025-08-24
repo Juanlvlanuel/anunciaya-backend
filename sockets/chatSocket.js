@@ -150,7 +150,7 @@ exports.registerChatSocket = (io, socket) => {
                 };
               }
             }
-          } catch {}
+          } catch { }
         }
         replyDoc = { _id: replyTo._id || undefined, texto: rTexto || "", preview: replyTo.preview || rTexto || "", autor: rAutor || null };
       }
@@ -178,7 +178,7 @@ exports.registerChatSocket = (io, socket) => {
       if (recipients.length) {
         try {
           await Chat.updateOne({ _id: chatId }, { $pull: { deletedFor: { $in: recipients } } });
-        } catch {}
+        } catch { }
       }
 
       // populate de emisor + asegurar replyTo viajando
@@ -188,7 +188,11 @@ exports.registerChatSocket = (io, socket) => {
 
       const blockedBy = check.blockedBy; // Set()
       const all = (check.chat.participantes || []).map(String);
-      const targets = all.filter((uid) => !blockedBy.has(uid));
+
+      // 👇 Nuevo: excluir SIEMPRE al remitente para que no reciba su propio "chat:newMessage"
+      const targets = all
+        .filter((uid) => uid !== sender)
+        .filter((uid) => !blockedBy.has(uid));
 
       for (const uid of targets) {
         io.to(`user:${uid}`).emit("chat:newMessage", { chatId, mensaje: toEmit });
@@ -214,7 +218,7 @@ exports.registerChatSocket = (io, socket) => {
       for (const uid of targets) {
         io.to(`user:${uid}`).emit("chat:typing", { chatId, usuarioId: sender, typing: !!typing });
       }
-    } catch {}
+    } catch { }
   });
 
   socket.on("chat:editMessage", async ({ messageId, texto }, cb) => {
