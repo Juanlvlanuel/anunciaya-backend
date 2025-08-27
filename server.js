@@ -81,8 +81,15 @@ app.use(compression());
 // CORS
 const defaultAllowed = [
   "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  "http://192.168.1.71:5173",     // tu LAN
+  "https://localhost:5173",       // por si el WebView fuerza https con puerto
+  "https://localhost",            // 👈 FALTA ESTE, sin puerto
+  "capacitor://localhost",        // WebView Capacitor
   "https://anunciaya-frontend.vercel.app",
 ];
+
+
 const extraFromEnv = (process.env.CORS_ORIGIN || "")
   .split(",").map(s => s.trim()).filter(Boolean);
 const ALLOWED_ORIGINS = [...new Set([...defaultAllowed, ...extraFromEnv])];
