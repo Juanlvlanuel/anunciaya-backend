@@ -1,7 +1,4 @@
-// chatSocket-1.js
-// Igual a tu sockets/chatSocket.js pero normaliza archivos antes de guardar para asegurar url/thumbUrl/isImage.
-// No inventa URLs si no existen; pero si viene "filename", genera /uploads/<filename> como mejor esfuerzo.
-
+// sockets/chatSocket.js — versión sin logs molestos
 const Chat = require("../models/Chat");
 const Mensaje = require("../models/Mensaje");
 
@@ -9,8 +6,6 @@ const IMG_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
 function looksLikeImageName(name = "") { return IMG_EXT_RE.test(String(name)); }
 function normalizeArchivo(a = {}) {
   const out = { ...a };
-
-  // Evitar guardar blob: URLs del navegador
   const clean = (u) => (typeof u === "string" && u.startsWith("blob:") ? "" : u);
 
   out.url =
@@ -34,11 +29,10 @@ function normalizeArchivo(a = {}) {
   const mime = String(a.mimeType || a.contentType || a.type || "").toLowerCase();
   out.isImage = a.isImage === true || mime.startsWith("image/") || looksLikeImageName(a.name || a.filename || out.url);
   out.name = a.name || a.filename || a.originalName || "";
-
   return out;
 }
 
-// === Presencia ===
+// ===== Presencia =====
 const AWAY_MS = 2 * 60 * 1000;
 const userConnCount = new Map();
 const presence = new Map();
@@ -57,48 +51,40 @@ function scheduleAway(io, userId) {
   awayTimers.set(userId, t);
 }
 
-// === Helper: comprueba si userId puede enviar al chat ===
 async function canSendToChat(chatId, userId) {
-  const Chat = require("../models/Chat");
   const chat = await Chat.findById(chatId).select("participantes blockedBy").lean();
   if (!chat) return { ok: false, reason: "Chat no encontrado" };
-
   const sender = String(userId);
   const participantes = (chat.participantes || []).map(String);
   const blockedBy = new Set((chat.blockedBy || []).map((x) => String(x)));
-
-  if (!participantes.includes(sender))
-    return { ok: false, reason: "No perteneces a este chat" };
-
-  if (blockedBy.has(sender))
-    return { ok: false, reason: "Has bloqueado este chat" };
-
+  if (!participantes.includes(sender)) return { ok: false, reason: "No perteneces a este chat" };
+  if (blockedBy.has(sender)) return { ok: false, reason: "Has bloqueado este chat" };
   const otroBloqueo = participantes.some((uid) => uid !== sender && blockedBy.has(uid));
-  if (otroBloqueo)
-    return { ok: false, reason: "El usuario te ha bloqueado" };
-
+  if (otroBloqueo) return { ok: false, reason: "El usuario te ha bloqueado" };
   return { ok: true, chat, blockedBy };
 }
 
 exports.registerChatSocket = (io, socket) => {
-  // ====== Presencia
+  // Snapshot de presencia
   socket.on("user:status:request", () => {
     const snapshot = {};
     for (const [uid, info] of presence.entries()) snapshot[uid] = info.status;
     socket.emit("user:status:snapshot", snapshot);
   });
 
-  socket.on("join", ({ usuarioId }) => {
-    if (!usuarioId) return;
-    socket.data.usuarioId = String(usuarioId);
-    socket.join(`user:${usuarioId}`);
-
-    const count = (userConnCount.get(usuarioId) || 0) + 1;
-    userConnCount.set(usuarioId, count);
-
-    if (count === 1) broadcastStatus(io, usuarioId, "online");
-    scheduleAway(io, usuarioId);
-  });
+  // === Unirse por usuario (alias compatibles)
+  function joinUser(userId) {
+    if (!userId) return;
+    socket.data.usuarioId = String(userId);
+    socket.join(`user:${userId}`);
+    const count = (userConnCount.get(userId) || 0) + 1;
+    userConnCount.set(userId, count);
+    if (count === 1) broadcastStatus(io, userId, "online");
+    scheduleAway(io, userId);
+  }
+  socket.on("join", ({ usuarioId }) => joinUser(usuarioId));
+  socket.on("chat:join", ({ usuarioId }) => joinUser(usuarioId));
+  socket.on("user:join", (userId) => joinUser(userId));
 
   socket.on("user:activity", () => {
     const userId = socket.data.usuarioId;
@@ -107,105 +93,70 @@ exports.registerChatSocket = (io, socket) => {
     scheduleAway(io, userId);
   });
 
-  // ====== Envío de mensajes (con enforcement de bloqueo) + NORMALIZACIÓN
+  // === Unirse por chat
+  function joinChatRoom(chatId) {
+    const cid = String(chatId || "");
+    if (!cid) return;
+    socket.join(`chat:${cid}`);
+  }
+  socket.on("chat:room:join", (chatId) => joinChatRoom(chatId));
+  socket.on("chat:joinRoom", (chatId) => joinChatRoom(chatId));
+
+  // === Envío de mensajes
   socket.on("chat:send", async (payload, cb) => {
     try {
-      const {
-        chatId,
-        emisorId,
-        texto,
-        archivos = [],
-        replyTo = null,
-        forwardOf = null,
-      } = payload || {};
-
+      const { chatId, emisorId, texto, archivos = [], replyTo = null, forwardOf = null } = payload || {};
       const sender = String(emisorId || socket.data?.usuarioId);
-      if (!chatId || !sender || (!texto && archivos.length === 0)) {
-        return cb?.({ ok: false, error: "Payload inválido" });
-      }
+      if (!chatId || !sender || (!texto && archivos.length === 0)) return cb?.({ ok: false, error: "Payload inválido" });
 
       const check = await canSendToChat(chatId, sender);
       if (!check.ok) return cb?.({ ok: false, error: check.reason });
 
-      // Normaliza adjuntos
       const archivosNorm = Array.isArray(archivos) ? archivos.map(normalizeArchivo) : [];
 
-      // ===== replyTo normalizado (igual que tu archivo original)
       let replyDoc;
       if (replyTo) {
         let rTexto = replyTo.texto || replyTo.preview || "";
         let rAutor = replyTo.autor || null;
         if ((!rTexto || !rAutor) && replyTo._id) {
           try {
-            const original = await Mensaje.findById(replyTo._id)
-              .select("_id texto emisor")
-              .populate("emisor", "_id nombre nickname");
+            const original = await Mensaje.findById(replyTo._id).select("_id texto emisor").populate("emisor", "_id nombre nickname");
             if (original) {
               if (!rTexto) rTexto = original.texto || "";
-              if (!rAutor && original.emisor) {
-                rAutor = {
-                  _id: original.emisor._id,
-                  nombre: original.emisor.nombre,
-                  nickname: original.emisor.nickname,
-                };
-              }
+              if (!rAutor && original.emisor) rAutor = { _id: original.emisor._id, nombre: original.emisor.nombre, nickname: original.emisor.nickname };
             }
-          } catch { }
+          } catch {}
         }
         replyDoc = { _id: replyTo._id || undefined, texto: rTexto || "", preview: replyTo.preview || rTexto || "", autor: rAutor || null };
       }
       const forwardDoc = forwardOf ? { _id: forwardOf._id || forwardOf } : undefined;
 
-      // ===== Guardar mensaje
-      let msg = await Mensaje.create({
-        chat: chatId,
-        emisor: sender,
-        texto,
-        archivos: archivosNorm,
-        replyTo: replyDoc,
-        forwardOf: forwardDoc,
-      });
+      let msg = await Mensaje.create({ chat: chatId, emisor: sender, texto, archivos: archivosNorm, replyTo: replyDoc, forwardOf: forwardDoc });
+      await Chat.findByIdAndUpdate(chatId, { ultimoMensaje: texto || (archivosNorm.length ? "📎 Archivo" : "Mensaje"), ultimoMensajeAt: new Date() });
 
-      await Chat.findByIdAndUpdate(chatId, {
-        ultimoMensaje: texto || (archivosNorm.length ? "📎 Archivo" : "Mensaje"),
-        ultimoMensajeAt: new Date(),
-      });
+      const recipients = (check.chat.participantes || []).map(String).filter((uid) => uid !== sender);
+      if (recipients.length) { try { await Chat.updateOne({ _id: chatId }, { $pull: { deletedFor: { $in: recipients } } }); } catch {} }
 
-      // Desocultar para destinatarios que lo tenían borrado "para mí"
-      const recipients = (check.chat.participantes || [])
-        .map(String)
-        .filter((uid) => uid !== sender);
-      if (recipients.length) {
-        try {
-          await Chat.updateOne({ _id: chatId }, { $pull: { deletedFor: { $in: recipients } } });
-        } catch { }
-      }
-
-      // populate de emisor + asegurar replyTo viajando
       msg = await msg.populate("emisor", "_id nombre nickname fotoPerfil");
       const toEmit = msg.toObject ? msg.toObject() : msg;
       if (!toEmit.replyTo && replyDoc) toEmit.replyTo = replyDoc;
 
-      const blockedBy = check.blockedBy; // Set()
+      const blockedBy = check.blockedBy;
       const all = (check.chat.participantes || []).map(String);
+      const targets = all.filter((uid) => uid !== sender).filter((uid) => !blockedBy.has(uid));
 
-      // 👇 Nuevo: excluir SIEMPRE al remitente para que no reciba su propio "chat:newMessage"
-      const targets = all
-        .filter((uid) => uid !== sender)
-        .filter((uid) => !blockedBy.has(uid));
-
-      for (const uid of targets) {
-        io.to(`user:${uid}`).emit("chat:newMessage", { chatId, mensaje: toEmit });
-      }
+      // Emitir por usuario
+      for (const uid of targets) io.to(`user:${uid}`).emit("chat:newMessage", { chatId, mensaje: toEmit });
+      // Y por room del chat (compatibilidad)
+      io.to(`chat:${String(chatId)}`).emit("chat:newMessage", { chatId: String(chatId), mensaje: toEmit });
 
       return cb?.({ ok: true, mensaje: toEmit });
     } catch (e) {
-      console.error("chat:send error", e);
       return cb?.({ ok: false, error: e?.message || "No se pudo enviar el mensaje" });
     }
   });
 
-  // (typing, edit, delete) igual a tu archivo…
+  // typing
   socket.on("chat:typing", async ({ chatId, usuarioId, typing }) => {
     try {
       const sender = String(usuarioId || socket.data?.usuarioId);
@@ -215,12 +166,12 @@ exports.registerChatSocket = (io, socket) => {
       const blockedBy = check.blockedBy;
       const all = (check.chat.participantes || []).map(String);
       const targets = all.filter((uid) => uid !== sender).filter((uid) => !blockedBy.has(uid));
-      for (const uid of targets) {
-        io.to(`user:${uid}`).emit("chat:typing", { chatId, usuarioId: sender, typing: !!typing });
-      }
-    } catch { }
+      for (const uid of targets) io.to(`user:${uid}`).emit("chat:typing", { chatId, usuarioId: sender, typing: !!typing });
+      io.to(`chat:${String(chatId)}`).emit("chat:typing", { chatId: String(chatId), usuarioId: sender, typing: !!typing });
+    } catch {}
   });
 
+  // editar
   socket.on("chat:editMessage", async ({ messageId, texto }, cb) => {
     try {
       const uid = socket.data?.usuarioId || null;
@@ -231,12 +182,15 @@ exports.registerChatSocket = (io, socket) => {
       if (String(msg.emisor) !== String(uid)) return cb?.({ ok: false, error: "Solo puedes editar tus propios mensajes" });
       msg.texto = texto; msg.editedAt = new Date(); await msg.save();
       msg = await msg.populate("emisor", "_id nombre nickname fotoPerfil");
-      const chat = await Chat.findById(msg.chat).populate("participantes", "_id");
-      if (chat) { chat.participantes.forEach((u) => { io.to(`user:${String(u._id)}`).emit("chat:messageEdited", { chatId: String(msg.chat), mensaje: msg }); }); }
+      const chatId = String(msg.chat);
+      const chat = await Chat.findById(chatId).populate("participantes", "_id");
+      if (chat) { chat.participantes.forEach((u) => io.to(`user:${String(u._id)}`).emit("chat:messageEdited", { chatId, mensaje: msg })); }
+      io.to(`chat:${chatId}`).emit("chat:messageEdited", { chatId, mensaje: msg });
       cb?.({ ok: true, mensaje: msg });
     } catch (e) { cb?.({ ok: false, error: e?.message || "Error al editar" }); }
   });
 
+  // borrar
   socket.on("chat:deleteMessage", async ({ messageId }, cb) => {
     try {
       const uid = socket.data?.usuarioId || null;
@@ -245,9 +199,11 @@ exports.registerChatSocket = (io, socket) => {
       const msg = await Mensaje.findById(messageId);
       if (!msg) return cb?.({ ok: false, error: "Mensaje no encontrado" });
       if (String(msg.emisor) !== String(uid)) return cb?.({ ok: false, error: "Solo puedes borrar tus propios mensajes" });
-      const chatId = String(msg.chat); await Mensaje.deleteOne({ _id: messageId });
+      const chatId = String(msg.chat);
+      await Mensaje.deleteOne({ _id: messageId });
       const chat = await Chat.findById(chatId).populate("participantes", "_id");
-      if (chat) { chat.participantes.forEach((u) => { io.to(`user:${String(u._id)}`).emit("chat:messageDeleted", { chatId, messageId: String(messageId) }); }); }
+      if (chat) { chat.participantes.forEach((u) => io.to(`user:${String(u._id)}`).emit("chat:messageDeleted", { chatId, messageId: String(messageId) })); }
+      io.to(`chat:${chatId}`).emit("chat:messageDeleted", { chatId, messageId: String(messageId) });
       cb?.({ ok: true });
     } catch (e) { cb?.({ ok: false, error: e?.message || "Error al borrar" }); }
   });

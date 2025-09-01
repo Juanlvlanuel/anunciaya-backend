@@ -50,7 +50,8 @@ module.exports = async (req, res, next) => {
     return req.usuario;
   };
 
-  const trySetUserFromRefresh = async () => {
+  
+const trySetUserFromRefresh = async () => {
     const raw = req.cookies?.[REFRESH_COOKIE_NAME];
     if (!raw) return null;
     let payload = null;
@@ -59,7 +60,13 @@ module.exports = async (req, res, next) => {
         issuer: process.env.JWT_ISS,
         audience: process.env.JWT_AUD,
       });
-    } catch { return null; }
+    } catch (e1) {
+      try {
+        payload = jwt.verify(raw, process.env.REFRESH_JWT_SECRET);
+      } catch (e2) {
+        return null;
+      }
+    }
 
     const uid = payload?.uid;
     if (!uid) return null;
@@ -78,14 +85,15 @@ module.exports = async (req, res, next) => {
     req.usuarioId = usuario._id;
     return req.usuario;
   };
+;
 
   try {
     // 1) Intento con access token (Authorization)
     let ok = await trySetUserFromAccess(token);
-    if (!ok) {
-      // 2) Fallback: si hay refresh cookie válida, usamos su uid (sin rotarla)
-      ok = await trySetUserFromRefresh();
-    }
+
+    // 2) Fallback con refresh cookie (permitido también en /api/usuarios/session)
+    if (!ok) ok = await trySetUserFromRefresh();
+
     if (!ok) return res.status(401).json({ mensaje: "No autenticado" });
 
     return next();

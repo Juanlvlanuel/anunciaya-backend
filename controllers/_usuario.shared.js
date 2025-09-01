@@ -1,6 +1,5 @@
-// controllers/_usuario.shared.js
+// controllers/_usuario.shared-1.js
 // Helpers y utilidades compartidas por controladores de usuario.
-// (Extraído de tu usuarioController actual, sin cambiar lógica.)
 
 const Usuario = require("../models/Usuario");
 const { Types } = require("mongoose");
@@ -17,14 +16,26 @@ const isHttps = (req) => {
   return !!(req?.secure || String(req?.headers?.["x-forwarded-proto"] || "").toLowerCase() === "https");
 };
 
+// ✅ Path unificado "/" para que el clearCookie en rutas funcione siempre
+
+// ✅ Path unificado "/" y dominio dinámico (solo se fija si coincide con el host actual)
+const getCookieDomain = (req) => {
+  const envDom = String(process.env.COOKIE_DOMAIN || "").trim();
+  if (!envDom) return undefined;
+  const host = String(req?.headers?.host || "").split(":")[0] || "";
+  if (host === envDom || host.endsWith("." + envDom)) return envDom;
+  return undefined;
+};
+
 const setRefreshCookie = (req, res, token) => {
-  const isProd = process.env.NODE_ENV === "production";
+  const https = isHttps(req);
   res.cookie(REFRESH_COOKIE_NAME, token, {
     httpOnly: true,
-    secure: isProd,
-    sameSite: isProd ? "none" : "lax",
-    path: "/api",
-    maxAge: 1000 * 60 * 60 * 24 * 14, // 14 días
+    secure: https,               // en HTTPS → true; en HTTP (local/LAN) → false
+    sameSite: https ? "none" : "lax",
+    path: "/",                   // unificado para que el cookie viaje en /api
+    maxAge: 1000 * 60 * 60 * 24 * 30,
+    domain: getCookieDomain(req),
   });
 };
 

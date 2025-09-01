@@ -1,9 +1,7 @@
-// controllers/mediaController-4.js
-// Cloudinary signed uploads — respuesta sin `upload_preset` (avatar y chat).
-// - Usa solo SHA1 en hex correctamente (sin digest("sha1")).
-// - Avatar: folder .../users/<uid>/avatar -> public_id="avatar", overwrite/invalidate true.
-// - Chat: si viene chatId (o preset interno chat_image) arma folder/tags/context.
-// - Nunca expone `upload_preset` al cliente.
+// controllers/mediaController-1.js
+// Cloudinary signed uploads — avatar, chat y negocios (sin exponer upload_preset al cliente).
+// Genera respuesta en formato { uploadUrl, fields } para POST directo a Cloudinary.
+// Mantiene compatibilidad con llamadas previas (devolviendo también campos planos).
 
 const crypto = require("crypto");
 require("../utils/cloudinary"); // Inicializa config/env
@@ -17,10 +15,21 @@ function month2(mm) {
   return n < 10 ? `0${n}` : String(n);
 }
 
+function buildThumbFromSecureUrl(url) {
+  try {
+    if (!url) return null;
+    const parts = String(url).split("/upload/");
+    if (parts.length < 2) return url;
+    // Inserta transformación para miniatura
+    const t = "w_400,h_400,c_fill,q_auto,f_auto";
+    return parts[0] + "/upload/" + t + "/" + parts[1];
+  } catch { return url; }
+}
+
 async function signUpload(req, res) {
   try {
     let {
-      upload_preset, // solo guía interna (no se devuelve)
+      upload_preset, // guía interna, no se devuelve
       folder,
       env,
       tags,
@@ -33,12 +42,19 @@ async function signUpload(req, res) {
       chatId,
       messageId,
       senderId,
+
+      // Negocio
+      negocioId,
+      userId, // opcional para tags/context; si no, tomamos del token
     } = req.body || {};
 
     const now = new Date();
     const yyyy = now.getUTCFullYear();
     const mm = month2(now.getUTCMonth() + 1);
     const finalEnv = env || (process.env.NODE_ENV === "production" ? "prod" : "dev");
+
+    // Identidad del usuario (para etiquetar assets)
+    const uid = req.usuarioId || req.usuario?._id || userId || null;
 
     // === AVATAR ===
     const isAvatarFolder = folder && /\/users\/[^/]+\/avatar\/?$/.test(String(folder));
@@ -58,16 +74,36 @@ async function signUpload(req, res) {
         `env:${finalEnv}`,
         "cat:Chat",
         chatId ? `chat:${chatId}` : null,
-        senderId ? `user:${senderId}` : null,
+        uid ? `user:${uid}` : null,
       ].filter(Boolean);
       if (!tags) tags = defaultTags;
       if (!context) {
         context = {
           ...(chatId ? { chat: chatId } : {}),
           ...(messageId ? { msg: messageId } : {}),
-          ...(senderId ? { sender: senderId } : {}),
+          ...(uid ? { sender: uid } : {}),
         };
       }
+    }
+
+    // === NEGOCIOS ===
+    if (negocioId) {
+      folder = `anunciaya/${finalEnv}/negocios/${negocioId}/images/${yyyy}/${mm}`;
+      const defaultTags = [
+        "app:anunciaya",
+        `env:${finalEnv}`,
+        "cat:Negocio",
+        `negocio:${negocioId}`,
+        uid ? `user:${uid}` : null,
+      ].filter(Boolean);
+      if (!tags) tags = defaultTags;
+      if (!context) {
+        context = {
+          negocio: negocioId,
+          ...(uid ? { owner: uid } : {}),
+        };
+      }
+      // public_id opcional, Cloudinary asigna si no se manda
     }
 
     // === Firma ===
@@ -80,12 +116,12 @@ async function signUpload(req, res) {
       ...(tags ? { tags: Array.isArray(tags) ? tags.join(",") : String(tags) } : {}),
       ...(context
         ? {
-          context: Object.entries(context)
-            .map(([k, v]) => `${k}=${v}`)
-            .join("|"),
-        }
+            context: Object.entries(context)
+              .map(([k, v]) => `${k}=${v}`)
+              .join("|"),
+          }
         : {}),
-      transformation: "c_limit,w_1600,h_1600,q_auto:good,f_auto", // 👈 compresión obligatoria
+      transformation: "c_limit,w_1600,h_1600,q_auto:good,f_auto",
     };
 
     const baseStr = Object.entries(paramsToSign)
@@ -95,27 +131,43 @@ async function signUpload(req, res) {
 
     const signature = sha1Hex(baseStr + process.env.CLOUDINARY_API_SECRET);
 
+    const cloudName = process.env.CLOUDINARY_CLOUD_NAME;
+    const apiKey = process.env.CLOUDINARY_API_KEY;
+
+    // Respuesta para POST directo a Cloudinary
+    const uploadUrl = `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`;
+    const fields = {
+      api_key: apiKey,
+      signature,
+      ...paramsToSign,
+    };
+
     return res.json({
-      cloudName: process.env.CLOUDINARY_CLOUD_NAME,
-      apiKey: process.env.CLOUDINARY_API_KEY,
+      // Formato recomendado
+      uploadUrl,
+      fields,
+
+      // Compatibilidad con formato anterior
+      cloudName,
+      apiKey,
       timestamp: paramsToSign.timestamp,
       signature,
-      transformation: "c_limit,w_1600,h_1600,q_auto:good,f_auto", // 👈 se devuelve al frontend
+      transformation: paramsToSign.transformation,
       ...(folder ? { folder } : {}),
       ...(public_id ? { public_id } : {}),
       ...(overwrite ? { overwrite: true } : {}),
       ...(invalidate ? { invalidate: true } : {}),
       ...(paramsToSign.tags ? { tags: paramsToSign.tags } : {}),
       ...(paramsToSign.context ? { context: paramsToSign.context } : {}),
+
+      // Cliente calculará thumbUrl tras la subida usando buildThumbFromSecureUrl(url).
+      // (No se puede conocer url hasta terminar el upload).
     });
   } catch (err) {
     console.error("Error firmando upload:", err);
     return res.status(500).json({ error: "Error al generar la firma de Cloudinary" });
   }
 }
-
-
-module.exports = { signUpload, destroyAsset };
 
 function extractPublicIdFromUrl(u = "") {
   try {
@@ -136,6 +188,7 @@ function extractPublicIdFromUrl(u = "") {
     return tail;
   } catch { return null; }
 }
+
 async function destroyAsset(req, res) {
   try {
     const cloudinary = require("../utils/cloudinary");
@@ -150,3 +203,5 @@ async function destroyAsset(req, res) {
     return res.status(500).json({ error: "No se pudo eliminar en Cloudinary" });
   }
 }
+
+module.exports = { signUpload, destroyAsset, buildThumbFromSecureUrl };

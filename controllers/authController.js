@@ -1,5 +1,7 @@
 // controllers/authController-1.js
 // Registro, Login y Refresh con rotación segura y "grace path" para refresh faltante.
+// + Logout: limpia la cookie de refresh correctamente.
+//
 // Ajustes: endurecemos set de cookie en refresh y añadimos no-store en la respuesta.
 // También normalizamos los campos { token, expiresIn, issuedAt } para el frontend.
 
@@ -19,26 +21,34 @@ const {
 } = require("./_usuario.shared");
 
 const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
-const isLocalhost = (req) => {
-  try {
-    const host = String(req.headers?.host || "").split(":")[0];
-    return host === "localhost" || host === "127.0.0.1";
-  } catch (_) { return true; }
-};
+
+// === util: detectar HTTPS real o si corre detrás de proxy
+function isHttps(req) {
+  if (req && req.secure) return true;
+  const xfp = String(req?.headers?.["x-forwarded-proto"] || "").toLowerCase();
+  return xfp === "https";
+}
+
 function getRefreshCookieOpts(req) {
-  const local = isLocalhost(req);
+  const https = isHttps(req);
+  // En HTTPS forzamos secure+none. En HTTP (local/LAN) usamos lax+no-secure.
+  const secure = https ? true : false;
+  const sameSite = https ? "none" : "lax";
+
   return {
     httpOnly: true,
-    sameSite: local ? "lax" : "none",
-    secure: local ? false : true,
+    sameSite,
+    secure,
     path: "/",
     maxAge: 30 * 24 * 60 * 60 * 1000,
     domain: process.env.COOKIE_DOMAIN || undefined,
   };
 }
+
 function clearRefreshCookieAll(req, res) {
   try { res.clearCookie(REFRESH_COOKIE_NAME, getRefreshCookieOpts(req)); } catch (_) {}
 }
+
 function ensureSetRefreshCookie(req, res, token) {
   try {
     setRefreshCookie(req, res, token);
@@ -308,8 +318,23 @@ const refreshToken = async (req, res) => {
   }
 };
 
+/* ===================== LOGOUT (limpia cookie de refresh) ===================== */
+const logoutUsuario = async (req, res) => {
+  try {
+    clearRefreshCookieAll(req, res);
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).json({ mensaje: "Logout OK" });
+  } catch (e) {
+    if (process.env.NODE_ENV !== "production") {
+      console.error("❌ Error en logout:", e);
+    }
+    return res.status(500).json({ mensaje: "Error en logout" });
+  }
+};
+
 module.exports = {
   registrarUsuario,
   loginUsuario,
   refreshToken,
+  logoutUsuario,
 };

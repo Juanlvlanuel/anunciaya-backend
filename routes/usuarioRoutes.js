@@ -159,13 +159,38 @@ function parseExpiresToSeconds(expStr) {
 
 router.post("/auth/refresh", rejectExtra([]), require("../controllers/authController").refreshToken);
 
-// Logout (mantén tu implementación existente en tu server)
+/* ===================== LOGOUT ===================== */
+/**
+ * Usamos las MISMAS opciones que el set de cookie del refresh en authController,
+ * para garantizar que clearCookie realmente elimine 'rid' en HTTP (LAN/local) y HTTPS (prod).
+ */
+const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
+
+function isHttps(req) {
+  if (req && req.secure) return true;
+  const xfp = String(req?.headers?.["x-forwarded-proto"] || "").toLowerCase();
+  return xfp === "https";
+}
+
+function getRefreshCookieOpts(req) {
+  const https = isHttps(req);
+  const secure = https ? true : false;
+  const sameSite = https ? "none" : "lax";
+  const cfg = (process.env.COOKIE_DOMAIN || "").trim().replace(/^\./, "");
+  const host = String(req?.headers?.host || "").split(":")[0];
+  const cookieDomain = (cfg && host && (host === cfg || host.endsWith("." + cfg))) ? cfg : undefined;
+  return {
+    httpOnly: true,
+    sameSite,
+    secure,
+    path: "/",
+    maxAge: 30 * 24 * 60 * 60 * 1000,
+    domain: cookieDomain,
+  };
+}
+
 router.post("/logout", async (req, res) => {
   try {
-    const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
-    const clearCookieOpts = {
-      httpOnly: true, sameSite: "lax", secure: false, path: "/"
-    };
     const raw = req.cookies?.[REFRESH_COOKIE_NAME];
     if (raw) {
       try {
@@ -173,16 +198,32 @@ router.post("/logout", async (req, res) => {
           issuer: process.env.JWT_ISS,
           audience: process.env.JWT_AUD,
         });
+        // Revocamos solo ese jti (la familia se maneja en refresh)
         await RefreshToken.updateOne({ jti, userId: uid }, { $set: { revokedAt: new Date() } });
+      } catch (_) {
+        // Token ilegible o ya inválido: igual limpiamos cookie
+      }
+      try { res.clearCookie(REFRESH_COOKIE_NAME, getRefreshCookieOpts(req)); } catch {}
+      try {
+        const https = isHttps(req);
+        res.clearCookie(REFRESH_COOKIE_NAME, {
+          httpOnly: true,
+          sameSite: https ? "none" : "lax",
+          secure: https,
+          path: "/api",
+          domain: process.env.COOKIE_DOMAIN || undefined,
+        });
       } catch {}
-      try { res.clearCookie(REFRESH_COOKIE_NAME, clearCookieOpts); } catch {}
     }
-    res.json({ mensaje: "Sesión cerrada" });
+    // Respuesta idempotente
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ mensaje: "Sesión cerrada" });
   } catch {
-    res.json({ mensaje: "Sesión cerrada" });
+    // No exponemos detalles; logout debe ser siempre exitoso del lado del cliente
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ mensaje: "Sesión cerrada" });
   }
 });
-
 
 // ======== Verificación de correo ========
 // Test SMTP

@@ -1,14 +1,15 @@
-// routes/mediaRoutes.js (CommonJS)
+
+// routes/mediaRoutes-1.js (CommonJS)
 const express = require("express");
 const verificarToken = require("../middleware/verificarToken");
 const { signUpload, destroyAsset } = require("../controllers/mediaController");
 
 const router = express.Router();
 
-// Protegido: genera firma segura para subida directa a Cloudinary
+// Protegido: firma segura para subida directa a Cloudinary
 router.post("/sign", verificarToken, signUpload);
 
-module.exports = router;
+// Protegido: eliminar asset de Cloudinary
+router.post("/destroy", verificarToken, destroyAsset);
 
-// Eliminar asset en Cloudinary
-router.post("/destroy", destroyAsset);
+module.exports = router;

@@ -40,12 +40,12 @@ const stateCookieOpts = {
 
 function parseExpiresToSeconds(expStr) {
   const s = String(expStr || "15m").trim().toLowerCase();
-  if (/^\d+$/.test(s)) return parseInt(s,10);
+  if (/^\d+$/.test(s)) return parseInt(s, 10);
   const m = s.match(/^(\d+)\s*([smhd])$/);
   if (!m) return 900;
-  const n = parseInt(m[1],10);
+  const n = parseInt(m[1], 10);
   const unit = m[2];
-  const map = { s:1, m:60, h:3600, d:86400 };
+  const map = { s: 1, m: 60, h: 3600, d: 86400 };
   return n * (map[unit] || 60);
 }
 
@@ -106,7 +106,7 @@ const autenticarConGoogle = async (req, res) => {
 
     if (usuario) {
       const attemptedRegister = Object.prototype.hasOwnProperty.call(req.body || {}, 'tipo') ||
-                                Object.prototype.hasOwnProperty.call(req.body || {}, 'perfil');
+        Object.prototype.hasOwnProperty.call(req.body || {}, 'perfil');
       if (attemptedRegister) {
         return res.status(409).json({ mensaje: 'Este correo ya tiene una cuenta registrada. Inicia sesión para continuar.' });
       }
@@ -114,7 +114,14 @@ const autenticarConGoogle = async (req, res) => {
       try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
       let refresh;
       try { const tmp = await signRefresh(usuario._id); const { refresh: r } = tmp; refresh = r; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
-      setRefreshCookie(req, res, refresh);
+      const isProd = process.env.NODE_ENV === "production";
+      res.cookie(process.env.REFRESH_COOKIE_NAME || "rid", refresh, {
+        httpOnly: true,
+        secure: isProd,                 // false en local (HTTP), true en prod (HTTPS)
+        sameSite: isProd ? "none" : "lax",
+        path: "/",                      // 👈 clave: no /api
+        maxAge: 30 * 24 * 60 * 60 * 1000
+      });
 
       return res.status(200).json({
         token: access,
@@ -154,7 +161,14 @@ const autenticarConGoogle = async (req, res) => {
     try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
     let refresh;
     try { const tmp = await signRefresh(usuario._id); const { refresh: r } = tmp; refresh = r; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
-    setRefreshCookie(req, res, refresh);
+    const isProd = process.env.NODE_ENV === "production";
+    res.cookie(process.env.REFRESH_COOKIE_NAME || "rid", refresh, {
+      httpOnly: true,
+      secure: isProd,                 // false en local (HTTP), true en prod (HTTPS)
+      sameSite: isProd ? "none" : "lax",
+      path: "/",                      // 👈 clave: no /api
+      maxAge: 30 * 24 * 60 * 60 * 1000
+    });
 
     return res.status(200).json({
       mensaje: "Registro y Login con Google Exitoso",
@@ -253,7 +267,14 @@ const googleCallbackHandler = async (req, res) => {
     try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
     let refresh;
     try { const tmp = await signRefresh(usuario._id); const { refresh: r } = tmp; refresh = r; } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando refresh" }); }
-    setRefreshCookie(req, res, refresh);
+    const isProd = process.env.NODE_ENV === "production";
+    res.cookie(process.env.REFRESH_COOKIE_NAME || "rid", refresh, {
+      httpOnly: true,
+      secure: isProd,                 // false en local (HTTP), true en prod (HTTPS)
+      sameSite: isProd ? "none" : "lax",
+      path: "/",                      // 👈 clave: no /api
+      maxAge: 30 * 24 * 60 * 60 * 1000
+    });
 
     return res.redirect(
       `https://anunciaya-frontend.vercel.app/?googleToken=${access}&expiresIn=${expiresIn}&issuedAt=${issuedAt}`

@@ -25,6 +25,7 @@ const uploadRoutes = require("./routes/uploadRoutes");
 const healthRoutes = require("./routes/healthRoutes");
 const geoRoutes = require("./routes/geoRoutes");
 const mediaRoutes = require("./routes/mediaRoutes"); // 👈 NUEVO
+const negocioRoutes = require("./routes/negocioRoutes");
 const { registerChatSocket } = require("./sockets/chatSocket");
 
 const app = express();
@@ -46,7 +47,10 @@ app.get("/readyz", (req, res) => {
 
 // 🔒 Seguridad básica
 app.disable("x-powered-by");
-app.set("trust proxy", 1);
+if (process.env.NODE_ENV === "production") {
+  app.set("trust proxy", 1);
+}
+
 
 // Helmet
 app.use(helmet({
@@ -82,7 +86,8 @@ app.use(compression());
 const defaultAllowed = [
   "http://localhost:5173",
   "http://127.0.0.1:5173",
-  "http://192.168.1.71:5173",     // tu LAN
+  "http://192.168.1.71:5173",
+  "http://192.168.1.70:5173",     // tu LAN
   "https://localhost:5173",       // por si el WebView fuerza https con puerto
   "https://localhost",            // 👈 FALTA ESTE, sin puerto
   "capacitor://localhost",        // WebView Capacitor
@@ -151,7 +156,7 @@ function antiNoSQL(req, res, next) {
     if (hasBannedKey(req.body) || hasBannedKey(req.query) || hasBannedKey(req.params)) {
       return res.status(400).json({ error: { code: "BAD_REQUEST", message: "Campos no permitidos en el payload" } });
     }
-  } catch (_) {}
+  } catch (_) { }
   return next();
 }
 app.use(antiNoSQL);
@@ -187,16 +192,16 @@ app.use((req, res, next) => {
   if (url === "/api/health" || url.startsWith("/api/health")) return next();
 
   const isUpload = url.startsWith("/api/upload");
-  const baseMs   = parseInt(process.env.REQUEST_TIMEOUT_MS || "15000", 10);
+  const baseMs = parseInt(process.env.REQUEST_TIMEOUT_MS || "15000", 10);
   const uploadMs = parseInt(process.env.REQUEST_TIMEOUT_UPLOAD_MS || "120000", 10);
-  const ttlMs    = isUpload ? uploadMs : baseMs;
+  const ttlMs = isUpload ? uploadMs : baseMs;
 
   const timer = setTimeout(() => {
     if (!res.headersSent) {
       res.setHeader("Connection", "close");
       return res.status(408).json({ error: { code: "REQUEST_TIMEOUT", message: "Request Timeout" } });
     }
-    try { req.destroy && req.destroy(); } catch (e) {}
+    try { req.destroy && req.destroy(); } catch (e) { }
   }, ttlMs);
 
   const clear = () => clearTimeout(timer);
@@ -209,13 +214,13 @@ connectDB();
 
 const RATE = {
   GLOBAL_WINDOW_MS: parseInt(process.env.RATELIMIT_GLOBAL_WINDOW_MS || "300000", 10),
-  GLOBAL_MAX:       parseInt(process.env.RATELIMIT_GLOBAL_MAX || "300", 10),
-  LOGIN_WINDOW_MS:  parseInt(process.env.RATELIMIT_LOGIN_WINDOW_MS || "900000", 10),
-  LOGIN_MAX:        parseInt(process.env.RATELIMIT_LOGIN_MAX || "10", 10),
-  REFRESH_WINDOW_MS:parseInt(process.env.RATELIMIT_REFRESH_WINDOW_MS || "60000", 10),
-  REFRESH_MAX:      parseInt(process.env.RATELIMIT_REFRESH_MAX || "60", 10),
+  GLOBAL_MAX: parseInt(process.env.RATELIMIT_GLOBAL_MAX || "300", 10),
+  LOGIN_WINDOW_MS: parseInt(process.env.RATELIMIT_LOGIN_WINDOW_MS || "900000", 10),
+  LOGIN_MAX: parseInt(process.env.RATELIMIT_LOGIN_MAX || "10", 10),
+  REFRESH_WINDOW_MS: parseInt(process.env.RATELIMIT_REFRESH_WINDOW_MS || "60000", 10),
+  REFRESH_MAX: parseInt(process.env.RATELIMIT_REFRESH_MAX || "60", 10),
   UPLOAD_WINDOW_MS: parseInt(process.env.RATELIMIT_UPLOAD_WINDOW_MS || "900000", 10),
-  UPLOAD_MAX:       parseInt(process.env.RATELIMIT_UPLOAD_MAX || "30", 10),
+  UPLOAD_MAX: parseInt(process.env.RATELIMIT_UPLOAD_MAX || "30", 10),
 };
 
 const __rateStores = { global: new Map(), login: new Map(), refresh: new Map(), upload: new Map() };
@@ -242,7 +247,7 @@ function setRateHeaders(res, limit, remaining, resetMs) {
   res.setHeader("X-RateLimit-Limit", String(limit));
   res.setHeader("X-RateLimit-Remaining", String(remaining < 0 ? 0 : remaining));
   res.setHeader("X-RateLimit-Reset", String(Math.ceil(resetMs / 1000)));
-  appendExposeHeaders(res, ["X-RateLimit-Limit","X-RateLimit-Remaining","X-RateLimit-Reset","Retry-After"]);
+  appendExposeHeaders(res, ["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"]);
 }
 
 function makeLimiter(store, { windowMs, max, keyFn, skipFn }) {
@@ -283,7 +288,7 @@ app.use("/api/usuarios/auth/refresh", makeLimiter(__rateStores.refresh, {
 
 app.use("/api/upload", makeLimiter(__rateStores.upload, {
   windowMs: RATE.UPLOAD_WINDOW_MS, max: RATE.UPLOAD_MAX,
-  keyFn: (req) => `upload:${req.ip}`, skipFn: (req) => !(["POST","PUT","PATCH"].includes(req.method)),
+  keyFn: (req) => `upload:${req.ip}`, skipFn: (req) => !(["POST", "PUT", "PATCH"].includes(req.method)),
 }));
 
 // Rutas
@@ -297,6 +302,7 @@ app.use("/api/chat", chatRoutes);
 app.use("/api/upload", uploadRoutes);
 app.use("/api/geo", geoRoutes);
 app.use("/api/media", mediaRoutes); // 👈 NUEVO
+app.use("/api/negocios", negocioRoutes);
 app.use("/api", healthRoutes);
 app.use("/api/media", mediaCleanupRoutes);
 
@@ -315,7 +321,7 @@ app.use("/uploads", express.static(path.join(__dirname, "uploads"), {
 const io = new SocketIOServer(server, {
   cors: {
     origin: (origin, cb) => isAllowedOrigin(origin) ? cb(null, true) : cb(new Error("WS CORS bloqueado: " + origin)),
-    methods: ["GET","POST"],
+    methods: ["GET", "POST"],
     credentials: true,
   },
 });
@@ -332,7 +338,7 @@ server.listen(PORT, () => {
 });
 
 try {
-  if (process.env.HEADERS_TIMEOUT_MS)        server.headersTimeout   = parseInt(process.env.HEADERS_TIMEOUT_MS, 10);
-  if (process.env.REQUEST_TIMEOUT_SERVER_MS) server.requestTimeout   = parseInt(process.env.REQUEST_TIMEOUT_SERVER_MS, 10);
-  if (process.env.KEEPALIVE_TIMEOUT_MS)      server.keepAliveTimeout = parseInt(process.env.KEEPALIVE_TIMEOUT_MS, 10);
-} catch (_) {}
+  if (process.env.HEADERS_TIMEOUT_MS) server.headersTimeout = parseInt(process.env.HEADERS_TIMEOUT_MS, 10);
+  if (process.env.REQUEST_TIMEOUT_SERVER_MS) server.requestTimeout = parseInt(process.env.REQUEST_TIMEOUT_SERVER_MS, 10);
+  if (process.env.KEEPALIVE_TIMEOUT_MS) server.keepAliveTimeout = parseInt(process.env.KEEPALIVE_TIMEOUT_MS, 10);
+} catch (_) { }
