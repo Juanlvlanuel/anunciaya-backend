@@ -54,12 +54,16 @@ const canonicalSubcat = (input = "") => {
 };
 
 /**
- * Límite de fotos por plan (perfil 1=3, perfil 2=10, perfil 3=30).
- */
-function maxFotosByPerfil(perfil) {
-  const limits = { 1: 3, 2: 10, 3: 30 };
-  return limits[Number(perfil) || 1] || 3;
+/** Límite de fotos por plan — Card vs Detalle */
+function maxFotosCardByPerfil(perfil) {
+  const limits = { 1: 4, 2: 8, 3: 15 };
+  return limits[Number(perfil) || 1] || 4;
 }
+function maxFotosDetailByPerfil(perfil) {
+  const limits = { 1: 10, 2: 15, 3: 30 };
+  return limits[Number(perfil) || 1] || 10;
+}
+
 
 /* =================== NUEVO: Listado público =================== */
 exports.listarNegociosPublicos = async (req, res, next) => {
@@ -88,28 +92,60 @@ exports.listarNegociosPublicos = async (req, res, next) => {
     }
 
     const [items, total] = await Promise.all([
-      Negocio.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Negocio.find(filter)
+        .populate("usuarioId", "perfil") // perfil del comerciante dueño
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
       Negocio.countDocuments(filter),
     ]);
 
+
     const mapped = (items || []).map((n) => {
-      const fotos = Array.isArray(n.fotos) ? n.fotos : [];
-      const portada = fotos[0] || "";
-      const thumbUrl = portada ? buildThumbFromSecureUrl(portada) : "";
+      const perfilOwner = Number(n?.usuarioId?.perfil) || 1;
+      const maxCard = maxFotosCardByPerfil(perfilOwner);
+
+      const allFotos = Array.isArray(n.fotos) ? n.fotos : [];
+      const fotosCard = allFotos.slice(0, maxCard);
+
+      const gallery = fotosCard.map((url) => ({
+        url,
+        thumbUrl: buildThumbFromSecureUrl(url),
+      }));
+
+      const photoUrl = gallery[0]?.url || "";
+      const thumbUrl = gallery[0]?.thumbUrl || "";
+
       return {
+        // === CardV1 ===
         id: String(n._id),
-        nombre: n.nombre,
-        categoria: n.categoria || "",
-        categoriaSlug: n.categoriaSlug || "",
-        subcategoria: n.subcategoria || "",
-        subcategoriaSlug: n.subcategoriaSlug || "",
-        ciudad: n.ciudad,
-        telefono: n.telefono || n.whatsapp || "",
-        direccion: n.direccion || "",
-        portada,
-        thumbUrl,
+        name: n.nombre,
+        category: n.categoria || "",
+        photoUrl,          // portada
+        thumbUrl,          // miniatura
+        rating: n.rating ?? 0,
+        reviews: n.reviews ?? 0,
+
+        // Opcionales (si los usas)
+        logoUrl: n.logoUrl || "",
+        badges: Array.isArray(n.badges) ? n.badges : [],
+        isOpen: typeof isCurrentlyOpen === "function" ? isCurrentlyOpen(n.closingTime) : true,
+        closingTime: n.closingTime || "",
+        description: n.descripcion || "",
+        promoText: n.promoText || "",
+        promoExpiresAt: n.promoExpiresAt || null,
+        priceLevel: n.priceLevel || 1,
+
+        // Galería limitada por plan (4/8/15)
+        gallery,
+
+        // Puedes seguir devolviendo distanceKm si ya lo calculas
+        // distanceKm: ...
+        isFavorite: false,
       };
     });
+
 
     res.json({ ok: true, page, limit, total, items: mapped });
   } catch (err) {
@@ -304,7 +340,7 @@ exports.actualizarFotosNegocio = async (req, res, next) => {
     if (!n) return res.status(404).json({ mensaje: "No encontrado" });
 
     const u = await Usuario.findById(uid).lean();
-    const maxFotos = maxFotosByPerfil(u?.perfil);
+    const maxFotos = maxFotosDetailByPerfil(u?.perfil);
 
     const body = req.body || {};
     let fotos = Array.isArray(n.fotos) ? [...n.fotos] : [];
@@ -366,14 +402,18 @@ exports.obtenerNegocioPorId = async (req, res, next) => {
     if (!n) return res.status(404).json({ mensaje: "No encontrado" });
     if (n.activo === false) return res.status(403).json({ mensaje: "No disponible" });
 
-    const fotos = Array.isArray(n.fotos) ? n.fotos : [];
-    const portada = fotos[0] || "";
+    const owner = await Usuario.findById(n.usuarioId, "perfil").lean();
+    const maxDetail = maxFotosDetailByPerfil(owner?.perfil);
+    const fotosRaw = Array.isArray(n.fotos) ? n.fotos.slice(0, maxDetail) : [];
+
+    const portada = fotosRaw[0] || "";
     const thumbUrl = portada ? buildThumbFromSecureUrl(portada) : "";
 
-    const fotosConThumb = fotos.map((url) => ({
+    const fotosConThumb = fotosRaw.map((url) => ({
       url,
       thumbUrl: buildThumbFromSecureUrl(url),
     }));
+
 
     return res.json({
       ok: true,

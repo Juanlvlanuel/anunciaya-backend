@@ -1,80 +1,27 @@
 // middleware/verificarToken-1.js
-const jwt = require("jsonwebtoken");
+// Refactor: usa helpers centralizados de utils/jwt.js
 const Usuario = require("../models/Usuario");
-
-const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
+const {
+  verifyAccess,
+  verifyRefresh,
+  parseAuthHeader,
+  REFRESH_COOKIE_NAME,
+} = require("../utils/jwt");
 
 module.exports = async (req, res, next) => {
-  let token = req.headers["authorization"] || "";
+  // 1) Intento con access token (Authorization)
+  const rawHeader = req.headers["authorization"] || "";
+  const accessToken = parseAuthHeader(rawHeader);
 
-  const trySetUserFromAccess = async (raw) => {
-    let t = String(raw || "").trim();
-    if (!t) return null;
-    if (t.toLowerCase().startsWith("bearer ")) t = t.slice(7).trim();
-    else if (t.toLowerCase().startsWith("token ")) t = t.slice(6).trim();
-
-    const options = {};
-    if (process.env.JWT_ISS) options.issuer = process.env.JWT_ISS;
-    if (process.env.JWT_AUD) options.audience = process.env.JWT_AUD;
-
-    const secrets = [process.env.JWT_SECRET, process.env.ACCESS_JWT_SECRET].filter(Boolean);
-
-    let decoded = null;
-    for (const sec of secrets) {
-      if (decoded) break;
-      try { decoded = jwt.verify(t, sec, options); } catch {}
-    }
-    if (!decoded) {
-      for (const sec of secrets) {
-        if (decoded) break;
-        try { decoded = jwt.verify(t, sec); } catch {}
-      }
-    }
-    if (!decoded) return null;
-
-    const usuarioId = decoded?.uid || decoded?.id || decoded?._id || decoded?.sub;
-    if (!usuarioId) return null;
-
-    const usuario = await Usuario.findById(usuarioId).lean();
-    if (!usuario) return null;
-
-    req.admin = !!(usuario.role === "admin" || usuario.isAdmin === true || (Array.isArray(usuario.scope) && usuario.scope.includes("admin")));
-    req.usuario = {
-      _id: usuario._id,
-      nombre: usuario.nombre,
-      correo: usuario.correo,
-      tipo: usuario.tipo,
-      perfil: usuario.perfil,
-    };
-    req.usuarioId = usuario._id;
-    return req.usuario;
-  };
-
-  
-const trySetUserFromRefresh = async () => {
-    const raw = req.cookies?.[REFRESH_COOKIE_NAME];
-    if (!raw) return null;
-    let payload = null;
-    try {
-      payload = jwt.verify(raw, process.env.REFRESH_JWT_SECRET, {
-        issuer: process.env.JWT_ISS,
-        audience: process.env.JWT_AUD,
-      });
-    } catch (e1) {
-      try {
-        payload = jwt.verify(raw, process.env.REFRESH_JWT_SECRET);
-      } catch (e2) {
-        return null;
-      }
-    }
-
-    const uid = payload?.uid;
+  const setUser = async (uid) => {
     if (!uid) return null;
-
     const usuario = await Usuario.findById(uid).lean();
     if (!usuario) return null;
-
-    req.admin = !!(usuario.role === "admin" || usuario.isAdmin === true || (Array.isArray(usuario.scope) && usuario.scope.includes("admin")));
+    req.admin = !!(
+      usuario.role === "admin" ||
+      usuario.isAdmin === true ||
+      (Array.isArray(usuario.scope) && usuario.scope.includes("admin"))
+    );
     req.usuario = {
       _id: usuario._id,
       nombre: usuario.nombre,
@@ -85,19 +32,31 @@ const trySetUserFromRefresh = async () => {
     req.usuarioId = usuario._id;
     return req.usuario;
   };
-;
 
   try {
-    // 1) Intento con access token (Authorization)
-    let ok = await trySetUserFromAccess(token);
+    let ok = null;
 
-    // 2) Fallback con refresh cookie (permitido también en /api/usuarios/session)
-    if (!ok) ok = await trySetUserFromRefresh();
+    if (accessToken) {
+      const decoded = verifyAccess(accessToken);
+      if (decoded) {
+        ok = await setUser(decoded?.uid || decoded?.id || decoded?._id || decoded?.sub);
+      }
+    }
+
+    // 2) Fallback con refresh cookie
+    if (!ok) {
+      const rawRefresh = req.cookies?.[REFRESH_COOKIE_NAME];
+      if (rawRefresh) {
+        const payload = verifyRefresh(rawRefresh);
+        if (payload) {
+          ok = await setUser(payload?.uid || payload?.sub || payload?._id || payload?.id);
+        }
+      }
+    }
 
     if (!ok) return res.status(401).json({ mensaje: "No autenticado" });
-
     return next();
-  } catch {
+  } catch (e) {
     return res.status(401).json({ mensaje: "No autenticado" });
   }
 };

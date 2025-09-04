@@ -22,6 +22,26 @@ const NegocioSchema = new mongoose.Schema(
 
     activo: { type: Boolean, default: true },
     descripcion: { type: String, trim: true, maxlength: 1000, default: "" },
+    // --- CardV1 (opcionales) ---
+    logoUrl: { type: String, trim: true, default: "" },
+    badges: { type: [String], default: [] },          // ej: ["Envío gratis", "VIP"]
+
+    // Métricas básicas para listado
+    rating: { type: Number, min: 0, max: 5, default: 0 },
+    reviews: { type: Number, min: 0, default: 0 },
+
+    // Precio y horario
+    priceLevel: { type: Number, min: 1, max: 4, default: 1 }, // 1–4
+    closingTime: { type: String, trim: true, default: "" },    // ej: "21:00"
+
+    // Promoción vigente
+    promoText: { type: String, trim: true, default: "" },
+    promoExpiresAt: { type: Date, default: null },
+
+    // Ubicación simple (para calcular distanceKm)
+    lat: { type: Number, default: null },
+    lng: { type: Number, default: null },
+
     fotos: { type: [String], default: [] },
   },
   { timestamps: true }

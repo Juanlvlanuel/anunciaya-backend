@@ -31,6 +31,8 @@ const { registerChatSocket } = require("./sockets/chatSocket");
 const app = express();
 const server = http.createServer(app);
 
+const IS_PROD = process.env.NODE_ENV === "production";
+
 const mediaCleanupRoutes = require("./routes/mediaCleanupRoutes");
 
 // --- Basic health & root routes for platform health checks ---
@@ -271,12 +273,20 @@ function makeLimiter(store, { windowMs, max, keyFn, skipFn }) {
   };
 }
 
-app.use(makeLimiter(__rateStores.global, {
+if (IS_PROD) app.use(makeLimiter(__rateStores.global, {
   windowMs: RATE.GLOBAL_WINDOW_MS, max: RATE.GLOBAL_MAX,
   keyFn: (req) => `ip:${req.ip}`, skipFn: (req) => req.path === "/api/health",
 }));
 
-app.use("/api/usuarios/login", makeLimiter(__rateStores.login, {
+// Dev: sin límite en login/refresh/upload
+if (!IS_PROD) {
+  app.use("/api/usuarios/login", (req, res, next) => {
+    try { res.setHeader("X-RateLimit-Limit", "unlimited"); res.setHeader("X-RateLimit-Remaining", "unlimited"); } catch {}
+    return next();
+  });
+  app.use("/api/usuarios/auth/refresh", (req, res, next) => next());
+  app.use("/api/upload", (req, res, next) => next());
+} else app.use("/api/usuarios/login", makeLimiter(__rateStores.login, {
   windowMs: RATE.LOGIN_WINDOW_MS, max: RATE.LOGIN_MAX,
   keyFn: (req) => `login:${req.ip}`, skipFn: (req) => !(req.method === "POST"),
 }));
