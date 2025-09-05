@@ -1,8 +1,10 @@
-// routes/negocioRoutes-1.js
+// routes/negocioRoutes.js (parche) — añade GET /api/negocios con filtros (?mine, ?estado, ?activo)
 const express = require("express");
 const router = express.Router();
 const verificarToken = require("../middleware/verificarToken");
+
 const {
+  listarNegocios,
   listarNegociosPublicos,
   crearNegocio,
   conteoMisNegocios,
@@ -14,26 +16,32 @@ const {
   obtenerNegocioPorId,
 } = require("../controllers/negocioController");
 
-// Todas protegidas, igual que tu versión actual.
+// Protegidas (igual que tu versión actual)
 router.use(verificarToken);
 
-// Listado "público" (para app autenticada)
+// NUEVO: listados con filtros (?mine, ?estado, ?activo)
+router.get("/", listarNegocios);
+
+// Listado "público" (app autenticada)
 router.get("/public", listarNegociosPublicos);
 
-// Mis negocios (definir ANTES de cualquier '/:id')
+// Mis negocios
 router.get("/mis/count", conteoMisNegocios);
 router.get("/mis", listarMisNegocios);
 
-// Operaciones por ID (segmentos específicos primero)
+// Operaciones por ID
 router.patch("/:id/toggle-activo", toggleActivo);
 router.patch("/:id/fotos", actualizarFotosNegocio);
 router.patch("/:id", editarNegocio);
 router.delete("/:id", borrarNegocio);
+router.patch("/:id/delete", borrarNegocio); // alias para usar helper `patch` desde FE
+
 
 // Crear
 router.post("/", crearNegocio);
+router.patch("/create", crearNegocio); // alias para FE
 
-// Detalle por ID — dejar al FINAL para no capturar '/mis'
+// Detalle por ID — al final para no capturar /mis
 router.get("/:id", obtenerNegocioPorId);
 
 module.exports = router;

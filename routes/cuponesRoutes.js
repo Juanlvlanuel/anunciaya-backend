@@ -8,7 +8,9 @@ const {
   redeem,
   useCoupon,
   createCupon,
+  removeCupon,
 } = require("../controllers/cuponesController");
+
 
 const verificarToken = require("../middleware/verificarToken");
 
@@ -37,5 +39,6 @@ router.post("/use", verificarToken, useCoupon);
 
 // Solo comerciante
 router.post("/", verificarToken, requireComerciante, createCupon);
+router.delete('/:id', verificarToken, requireComerciante, removeCupon);
 
 module.exports = router;

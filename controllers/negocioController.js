@@ -26,7 +26,26 @@ const ALIASES = {
   "boutiques-y-tiendas": "boutiques-tiendas",
   "transporte": "transporte-movilidad",
   "educacion-y-cuidado": "educacion-cuidado",
-};
+
+  "comida": "alimentos-consumo",
+  "Comida": "alimentos-consumo",
+  "salud-fit": "salud-cuidado-personal",
+  "Salud & Fit": "salud-cuidado-personal",
+  "Servicios": "servicios-profesionales-generales",
+  "comercios": "boutiques-tiendas",
+  "Comercios": "boutiques-tiendas",
+  "diversion": "entretenimiento",
+  "Diversión": "entretenimiento",
+  "Diversion": "entretenimiento",
+  "movilidad": "transporte-movilidad",
+  "Movilidad": "transporte-movilidad",
+  "finanzas": "servicios-financieros",
+  "Finanzas": "servicios-financieros",
+  "educacion-cuidado": "educacion-cuidado",
+  "Educación y Cuidado": "educacion-cuidado",
+  "Educacion y Cuidado": "educacion-cuidado",
+  "mascotas": "mascotas",
+  "Mascotas": "mascotas",};
 
 const toSlug = (s = "") =>
   String(s || "")
@@ -52,6 +71,19 @@ const canonicalSubcat = (input = "") => {
   const slug = toSlug(input);
   return slug;
 };
+// === Índice de subcategorías por grupo (sincronizado con FE) ===
+const SUBCAT_INDEX = new Map([
+  ["alimentos-consumo", new Set(["antojitos-y-postres-locales", "cafeterias", "carnicerias", "comida-rapida", "dulcerias", "jugos-y-licuados", "neverias", "panaderias", "pescaderias", "pollerias", "productos-regionales-y-artesanales", "reposterias-y-pastelerias", "restaurantes", "supermercados-y-abarrotes", "tiendas-naturistas", "tortillerias", "vinos-y-licores"])],
+  ["salud-cuidado-personal", new Set(["bienestar-y-fitness", "dentistas-y-odontologia", "esteticas-y-barberias", "farmacias", "fisioterapia-y-rehabilitacion", "hospitales-y-centros-de-salud", "laboratorios-clinicos", "medicina-estetica", "medicos-y-clinicas-generales", "nutricion-y-dietetica", "opticas", "psicologia-y-terapias-alternativas", "quiropracticos", "spas-y-masajes"])],
+  ["servicios-profesionales-generales", new Set(["agencias-y-servicios-varios", "cuidado-personal-y-social", "eventos-y-producciones", "hogar-y-mantenimiento", "profesionales-y-consultorias", "reparacion-y-soporte", "seguridad-y-funerarias"])],
+  ["boutiques-tiendas", new Set(["boutiques-y-ropa", "celulares-y-accesorios", "deportes", "electronica-y-tecnologia", "florerias", "joyerias-y-relojerias", "jugueterias", "librerias", "mueblerias-y-decoracion", "perfumerias-y-cosmeticos", "regalos-y-souvenirs", "zapaterias"])],
+  ["entretenimiento", new Set(["actividades-recreativas", "balnearios-y-albercas-recreativas", "bares-y-antros", "centros-de-juegos-infantiles", "karaoke-y-salones-recreativos", "parques-tematicos-y-ferias"])],
+  ["transporte-movilidad", new Set(["escuelas-de-manejo", "fletes-y-transporte-de-carga", "gruas-y-auxilio-vial", "renta-de-vehiculos", "repartidores", "seguros-para-autos", "servicios-para-autos", "taxis", "transporte-turistico-y-recreativo"])],
+  ["servicios-financieros", new Set(["asesores-financieros-y-contables", "casas-de-empeno", "prestamos-y-creditos", "seguros"])],
+  ["educacion-cuidado", new Set(["clases-particulares", "cursos-y-talleres", "escuela-de-idiomas", "escuelas-para-adultos-y-jovenes", "guarderias"])],
+  ["mascotas", new Set(["adiestradores-y-entrenadores", "alimentos-especializados", "estetica-y-grooming", "guarderias-y-pensiones", "otros-servicios", "paseadores-de-perros", "tiendas-y-accesorios", "veterinarias-y-clinicas"])]
+]);
+
 
 /**
 /** Límite de fotos por plan — Card vs Detalle */
@@ -179,6 +211,15 @@ exports.crearNegocio = async (req, res, next) => {
     }
     const subcatSlug = subcategoria ? canonicalSubcat(subcategoria) : "";
 
+// Blindaje: subcategoría debe pertenecer al grupo
+if (subcategoria) {
+  const allowed = SUBCAT_INDEX.get(catSlug);
+  if (allowed && !allowed.has(subcatSlug)) {
+    return res.status(400).json({ mensaje: "Subcategoría inválida para este grupo" });
+  }
+}
+
+
     const u = await Usuario.findById(uid).lean();
     if (!u || String(u.tipo) !== "comerciante") {
       return res.status(403).json({ mensaje: "Solo comerciantes pueden publicar negocios" });
@@ -298,7 +339,17 @@ exports.editarNegocio = async (req, res, next) => {
       n.subcategoriaSlug = n.subcategoria ? canonicalSubcat(n.subcategoria) : "";
     }
 
-    if (!n.nombre || !n.categoriaSlug || !n.ciudad) {
+    
+// Blindaje: si hay subcategoría, validar que pertenezca al grupo
+if (n.subcategoria) {
+  const _subSlug = canonicalSubcat(n.subcategoria);
+  const _allowed = SUBCAT_INDEX.get(n.categoriaSlug);
+  if (_allowed && !_allowed.has(_subSlug)) {
+    return res.status(400).json({ mensaje: "Subcategoría inválida para este grupo" });
+  }
+  n.subcategoriaSlug = _subSlug;
+}
+if (!n.nombre || !n.categoriaSlug || !n.ciudad) {
       return res.status(400).json({ mensaje: "Los campos nombre, categoría y ciudad son obligatorios" });
     }
 
@@ -435,6 +486,62 @@ exports.obtenerNegocioPorId = async (req, res, next) => {
         createdAt: n.createdAt,
       },
     });
+  } catch (err) {
+    return next(err);
+  }
+};
+
+/** Helpers */
+function parseBool(v) {
+  if (v === true) return true;
+  const s = String(v || "").trim().toLowerCase();
+  return s === "1" || s === "true" || s === "yes" || s === "on";
+}
+
+function toObjectId(id) { try { return id; } catch { return null; } }
+
+/**
+ * GET /api/negocios
+ * Soporta:
+ *   - ?mine=1           => negocios del usuario autenticado
+ *   - ?estado=publicado => (opcional) filtra por estado si tu modelo lo usa
+ *   - ?activo=1         => (opcional) filtra activo=true/false
+ *   - ?limit, ?page     => paginación
+ * Devuelve por defecto { id, nombre } para poblar selects.
+ */
+exports.listarNegocios = async (req, res, next) => {
+  try {
+    const page  = Math.max(1, parseInt(req.query.page || "1", 10));
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit || "50", 10)));
+    const skip  = (page - 1) * limit;
+
+    const filter = {};
+    if (String(req.query.mine || "") === "1") {
+      const uid = req.usuarioId || req.usuario?._id;
+      if (!uid) return res.status(401).json({ mensaje: "No autenticado" });
+      filter.usuarioId = uid;
+    }
+    if (typeof req.query.activo !== "undefined") {
+      filter.activo = parseBool(req.query.activo);
+    }
+    if (typeof req.query.estado !== "undefined" && String(req.query.estado).trim()) {
+      // Sólo aplica si tu colección maneja el campo 'estado'
+      filter.estado = String(req.query.estado).trim();
+    }
+
+    // Proyección mínima para selects
+    const projection = "_id nombre activo estado logoUrl";
+
+    const items = await Negocio.find(filter).sort({ nombre: 1 }).skip(skip).limit(limit).select(projection).lean();
+    const mapped = items.map(n => ({
+      id: String(n._id),
+      nombre: n.nombre,
+      activo: n.activo !== false,
+      estado: n.estado || undefined,
+      logoUrl: n.logoUrl || undefined,
+    }));
+
+    return res.json({ ok: true, page, limit, items: mapped });
   } catch (err) {
     return next(err);
   }

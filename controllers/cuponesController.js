@@ -1,6 +1,8 @@
-// controllers/cuponesController.js — usa models Cupon y CuponCanje
+// controllers/cuponesController.js — multi-imagen + LOGO + TTL flexible (v4)
 const Cupon = require("../models/Cupon");
 const CuponCanje = require("../models/CuponCanje");
+const cloudinary = require("../utils/cloudinary");
+const { emitCuponNew } = require("../sockets/ioHubCupones");
 
 function toMs(t) {
   const v = new Date(t).getTime();
@@ -15,6 +17,24 @@ function uid(req) {
   return String(req?.usuario?._id || req?.usuarioId || req?.user?.id || "");
 }
 
+// ===== Helpers de expiración flexible =====
+function resolveVenceAt(body = {}) {
+  if (body.venceAt) {
+    const d = new Date(body.venceAt);
+    if (!isNaN(+d)) return d;
+  }
+  const now = Date.now();
+  const ttlMin = Number(body.ttlMin || 0);
+  const ttlHoras = Number(body.ttlHoras || 0);
+  const ttlDias = Number(body.ttlDias || 0);
+  let ttlMs = 0;
+  if (ttlMin > 0) ttlMs += ttlMin * 60 * 1000;
+  if (ttlHoras > 0) ttlMs += ttlHoras * 60 * 60 * 1000;
+  if (ttlDias > 0) ttlMs += ttlDias * 24 * 60 * 60 * 1000;
+  if (ttlMs > 0) return new Date(now + ttlMs);
+  return null;
+}
+
 // GET /api/cupones/expiring
 async function listExpiring(req, res) {
   try {
@@ -22,19 +42,23 @@ async function listExpiring(req, res) {
     const now = new Date();
     const serverNow = Date.now();
 
-    const defs = await Cupon.find({ activa: true, venceAt: { $gt: now } })
+    const defs = await Cupon.find({ activa: true, estado: "publicado", venceAt: { $gt: now } })
       .sort({ venceAt: 1 })
       .limit(limit)
       .lean();
 
     const items = (defs || []).map((p) => ({
       id: String(p._id),
+      negocioId: String(p.negocioId || ""),
       titulo: p.titulo,
       etiqueta: p.etiqueta || "",
       colorHex: p.colorHex || "#2563eb",
       expiresAt: toMs(p.venceAt),
       publishedAt: toMs(p.createdAt),
       venceEnMin: minutesLeft(p.venceAt),
+      imageUrl: p.imageUrl || "",
+      thumbUrl: p.thumbUrl || "",
+      logoUrl: p.logoThumbUrl || p.logoUrl || "",
     }));
 
     return res.json({ serverNow, items });
@@ -54,32 +78,65 @@ async function createCupon(req, res) {
       etiqueta,
       tipo = "percent",
       valor,
-      venceAt,
       colorHex,
       stockTotal = 0,
       limitPorUsuario = 1,
+      estado = "publicado",
+      imageUrl, imagePublicId, thumbUrl, galeria,
+      logoUrl, logoPublicId, logoThumbUrl,
     } = req.body || {};
 
-    if (!negocioId || !titulo || !valor || !venceAt) {
-      return res
-        .status(400)
-        .json({ mensaje: "negocioId, titulo, valor y venceAt son requeridos" });
-    }
+    const venceAt = resolveVenceAt(req.body);
 
-    const data = await Cupon.create({
+    if (!negocioId || !titulo || !valor) {
+      return res.status(400).json({ mensaje: "negocioId, titulo y valor son requeridos" });
+    }
+    if (!venceAt) {
+      return res.status(400).json({ mensaje: "Debes enviar venceAt (ISO) o ttlMin/ttlHoras/ttlDias" });
+    }
+    const doc = {
       negocioId,
       titulo: String(titulo).trim(),
       etiqueta: etiqueta ? String(etiqueta).trim() : undefined,
       tipo,
       valor: Number(valor),
-      venceAt: new Date(venceAt),
+      venceAt,
       colorHex: colorHex || "#2563eb",
       stockTotal: Number(stockTotal || 0),
       stockUsado: 0,
       limitPorUsuario: Number(limitPorUsuario || 1),
       creadoPor: userId || undefined,
       activa: true,
-    });
+      estado,
+    };
+
+    if (imageUrl) doc.imageUrl = imageUrl;
+    if (imagePublicId) doc.imagePublicId = imagePublicId;
+    if (thumbUrl) doc.thumbUrl = thumbUrl;
+    if (Array.isArray(galeria)) {
+      doc.galeria = galeria
+        .filter(Boolean)
+        .map((g) => ({ url: g?.url || g?.secureUrl || "", publicId: g?.publicId || "", thumbUrl: g?.thumbUrl || "" }))
+        .filter((g) => g.url);
+    }
+    if (logoUrl) doc.logoUrl = logoUrl;
+    if (logoPublicId) doc.logoPublicId = logoPublicId;
+    if (logoThumbUrl) doc.logoThumbUrl = logoThumbUrl;
+
+    const data = await Cupon.create(doc);
+
+    // Emitir en tiempo real
+    try {
+      emitCuponNew({
+        id: String(data._id),
+        titulo: data.titulo,
+        etiqueta: data.etiqueta || "",
+        colorHex: data.colorHex || "#2563eb",
+        expiresAt: new Date(data.venceAt).getTime(),
+        publishedAt: new Date(data.createdAt || Date.now()).getTime(),
+        serverNow: Date.now(),
+      });
+    } catch { }
 
     return res.status(201).json({ ok: true, id: String(data._id) });
   } catch (e) {
@@ -116,6 +173,9 @@ async function listAvailable(req, res) {
         expiresAt,
         publishedAt: toMs(p.createdAt),
         venceEnMin: minutesLeft(p.venceAt),
+        imageUrl: p.imageUrl || "",
+        thumbUrl: p.thumbUrl || "",
+        logoUrl: p.logoThumbUrl || p.logoUrl || "",
       });
       if (items.length >= limit) break;
     }
@@ -198,4 +258,31 @@ async function useCoupon(req, res) {
   }
 }
 
-module.exports = { listExpiring, createCupon, listAvailable, redeem, useCoupon };
+// DELETE /api/cupones/:id (auth comerciante)
+async function removeCupon(req, res) {
+  try {
+    const userId = uid(req);
+    const id = req.params.id;
+    const p = await Cupon.findById(id);
+    if (!p) return res.status(404).json({ mensaje: "Cupón no encontrado" });
+
+    const isOwner = String(p.creadoPor || "") === String(userId || "");
+    const isMerchant = req?.usuario?.tipo === "comerciante";
+    if (!isOwner && !isMerchant) return res.status(403).json({ mensaje: "No autorizado" });
+
+    await Cupon.deleteOne({ _id: id });
+
+    const ids = [];
+    if (p.imagePublicId) ids.push(p.imagePublicId);
+    if (Array.isArray(p.galeria)) for (const g of p.galeria) if (g?.publicId) ids.push(g.publicId);
+    if (p.logoPublicId) ids.push(p.logoPublicId);
+    try { for (const pid of ids) await cloudinary.uploader.destroy(pid, { invalidate: true, resource_type: "image" }); } catch { }
+
+    return res.json({ ok: true });
+  } catch (e) {
+    console.error("cupones.remove", e);
+    return res.status(500).json({ mensaje: "Error al eliminar el cupón" });
+  }
+}
+
+module.exports = { listExpiring, createCupon, listAvailable, redeem, useCoupon, removeCupon };
