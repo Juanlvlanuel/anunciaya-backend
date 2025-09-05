@@ -1,13 +1,14 @@
 // controllers/contenidoLocalController-1.js
 const filtrarPorUbicacion = require("../helpers/filtrarPorUbicacion");
 const Rifas = require("../models/Rifas");
-const Oferta = require("../models/Oferta");
+// ⛔ Oferta removida
 const Subasta = require("../models/Subasta");
 
 /**
  * Obtiene contenido local por tipo cercano a lat/lng.
- * Mejora: validación de parámetros, normalización de `tipo` y manejo de errores uniforme.
- * Lógica original preservada.
+ * Versión limpia: sin dependencia de 'Oferta' / Promos / Promociones.
+ * - 'rifas' y 'subastas' siguen funcionando.
+ * - 'ofertas' / 'promos' / 'promociones' responden 410 GONE (módulo retirado).
  */
 const obtenerContenidoLocal = async (req, res) => {
   try {
@@ -25,13 +26,15 @@ const obtenerContenidoLocal = async (req, res) => {
       return res.status(400).json({ mensaje: "Coordenadas inválidas" });
     }
 
-    let Modelo;
+    // Tipos retirados explícitamente
+    if (["ofertas", "promos", "promociones"].includes(tipoRaw)) {
+      return res.status(410).json({ error: { code: "GONE", message: "El módulo fue retirado temporalmente" } });
+    }
+
+    let Modelo = null;
     switch (tipoRaw) {
       case "rifas":
         Modelo = Rifas;
-        break;
-      case "ofertas":
-        Modelo = Oferta;
         break;
       case "subastas":
         Modelo = Subasta;

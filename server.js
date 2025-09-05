@@ -17,7 +17,6 @@ const connectDB = require("./config/db");
 const usuarioRoutes = require("./routes/usuarioRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const logosCarouselRoutes = require("./routes/logosCarouselRoutes");
-const promocionesRoutes = require("./routes/promocionesRoutes");
 const rifasRoutes = require("./routes/rifasRoutes");
 const contenidoLocalRoutes = require("./routes/contenidoLocalRoutes");
 const chatRoutes = require("./routes/chatRoutes");
@@ -27,6 +26,9 @@ const geoRoutes = require("./routes/geoRoutes");
 const mediaRoutes = require("./routes/mediaRoutes"); // 👈 NUEVO
 const negocioRoutes = require("./routes/negocioRoutes");
 const { registerChatSocket } = require("./sockets/chatSocket");
+const { registerCuponesSocket } = require("./sockets/ioHubCupones");
+const cuponesRoutes = require("./routes/cuponesRoutes");
+
 
 const app = express();
 const server = http.createServer(app);
@@ -305,7 +307,6 @@ app.use("/api/upload", makeLimiter(__rateStores.upload, {
 app.use("/api/usuarios", usuarioRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/logos-carousel", logosCarouselRoutes);
-app.use("/api/promociones", promocionesRoutes);
 app.use("/api/rifas", rifasRoutes);
 app.use("/api/contenido/local", contenidoLocalRoutes);
 app.use("/api/chat", chatRoutes);
@@ -313,6 +314,7 @@ app.use("/api/upload", uploadRoutes);
 app.use("/api/geo", geoRoutes);
 app.use("/api/media", mediaRoutes); // 👈 NUEVO
 app.use("/api/negocios", negocioRoutes);
+app.use("/api/cupones", cuponesRoutes);
 app.use("/api", healthRoutes);
 app.use("/api/media", mediaCleanupRoutes);
 
@@ -336,6 +338,7 @@ const io = new SocketIOServer(server, {
   },
 });
 io.on("connection", (socket) => registerChatSocket(io, socket));
+registerCuponesSocket(io);
 
 // Not found + error handler (final middleware)
 app.all(/^\/(api|uploads)(\/|$)/, notFoundHandler);
