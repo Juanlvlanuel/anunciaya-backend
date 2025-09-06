@@ -1,8 +1,8 @@
-// controllers/cuponesController.js — multi-imagen + LOGO + TTL flexible (v4)
+// controllers/cuponesController-1.js — v5
 const Cupon = require("../models/Cupon");
 const CuponCanje = require("../models/CuponCanje");
 const cloudinary = require("../utils/cloudinary");
-const { emitCuponNew } = require("../sockets/ioHubCupones");
+const { emitCuponNew, emitCuponRemoved } = require("../sockets/ioHubCupones");
 
 function toMs(t) {
   const v = new Date(t).getTime();
@@ -42,7 +42,24 @@ async function listExpiring(req, res) {
     const now = new Date();
     const serverNow = Date.now();
 
-    const defs = await Cupon.find({ activa: true, estado: "publicado", venceAt: { $gt: now } })
+    // Solo válidos y no vencidos
+    const defs = await Cupon.find(
+      { activa: true, estado: "publicado", venceAt: { $gt: now } },
+      // Proyección estricta para no arrastrar campos innecesarios
+      {
+        _id: 1,
+        negocioId: 1,
+        titulo: 1,
+        etiqueta: 1,
+        colorHex: 1,
+        venceAt: 1,
+        createdAt: 1,
+        imageUrl: 1,
+        thumbUrl: 1,
+        logoUrl: 1,
+        logoThumbUrl: 1,
+      }
+    )
       .sort({ venceAt: 1 })
       .limit(limit)
       .lean();
@@ -271,6 +288,8 @@ async function removeCupon(req, res) {
     if (!isOwner && !isMerchant) return res.status(403).json({ mensaje: "No autorizado" });
 
     await Cupon.deleteOne({ _id: id });
+
+    try { emitCuponRemoved({ id: String(id) }); } catch {}
 
     const ids = [];
     if (p.imagePublicId) ids.push(p.imagePublicId);

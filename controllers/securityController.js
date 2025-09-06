@@ -6,6 +6,24 @@ const Usuario = require("../models/Usuario");
 const RefreshToken = require("../models/RefreshToken");
 
 /** ===== Cambiar contraseña ===== */
+const bcrypt = require("bcryptjs");
+let jwtUtils = null;
+try { jwtUtils = require("../utils/jwt"); } catch (_) { jwtUtils = null; }
+const REFRESH_COOKIE_NAME = (jwtUtils && jwtUtils.REFRESH_COOKIE_NAME) || process.env.REFRESH_COOKIE_NAME || "rid";
+
+function strongEnough(pwd = "") {
+  if (typeof pwd !== "string") return false;
+  if (pwd.length < 8) return false;
+  if (!/[a-z]/.test(pwd)) return false;
+  if (!/[A-Z]/.test(pwd)) return false;
+  if (!/[0-9]/.test(pwd)) return false;
+  return true;
+}
+function minutesDiff(a, b) {
+  const ms = Math.max(0, (a?.getTime?.() || a || 0) - (b?.getTime?.() || b || 0));
+  return Math.ceil(ms / 60000);
+}
+
 const cambiarPassword = async (req, res) => {
   try {
     const uid = req.usuario?._id || req.usuarioId;
@@ -13,35 +31,76 @@ const cambiarPassword = async (req, res) => {
 
     const actual = (req.body?.actual || req.body?.current || "").toString();
     const nueva  = (req.body?.nueva  || req.body?.new     || "").toString();
-    const repetir = (req.body?.confirm || req.body?.repetir || "").toString();
+    const confirmar = (req.body?.confirm || req.body?.repetir || "").toString();
 
-    if (!actual || !nueva || !repetir) {
-      return res.status(400).json({ mensaje: "Faltan campos" });
-    }
-    if (nueva !== repetir) {
+    if (!nueva) return res.status(400).json({ mensaje: "Nueva contraseña requerida" });
+    if (confirmar && nueva !== confirmar) {
       return res.status(400).json({ mensaje: "La confirmación no coincide" });
     }
-    if (nueva.length < 6 || nueva.length > 128) {
-      return res.status(400).json({ mensaje: "La contraseña debe tener entre 6 y 128 caracteres" });
+    if (!strongEnough(nueva)) {
+      return res.status(400).json({ mensaje: "La nueva contraseña debe tener al menos 8 caracteres, incluir mayúscula, minúscula y un número" });
     }
 
-    const usuario = await Usuario.findById(uid).select("+contraseña");
-    if (!usuario) return res.status(404).json({ mensaje: "Usuario no encontrado" });
+    const user = await Usuario.findById(uid).select("+contraseña +failedLoginCount +lockUntil +autenticadoPorGoogle +autenticadoPorFacebook");
+    if (!user) return res.status(404).json({ mensaje: "Usuario no encontrado" });
 
-    const ok = await usuario.comprobarPassword(actual);
-    if (!ok) return res.status(401).json({ mensaje: "Contraseña actual incorrecta" });
+    const now = new Date();
+    if (user.lockUntil && user.lockUntil > now) {
+      const mins = minutesDiff(user.lockUntil, now);
+      return res.status(429).json({ mensaje: `Demasiados intentos. Intenta de nuevo en ${mins} min` });
+    }
 
-    usuario.contraseña = nueva;
-    await usuario.save();
+    const hadPassword = !!user.contraseña;
+    if (hadPassword) {
+      if (!actual) return res.status(400).json({ mensaje: "Contraseña actual requerida" });
+      const ok = await user.comprobarPassword(actual);
+      if (!ok) {
+        try {
+          const max = Usuario.BLOQUEO_MAX_INTENTOS || 5;
+          const mins = Usuario.BLOQUEO_MINUTOS || 3;
+          user.failedLoginCount = (user.failedLoginCount || 0) + 1;
+          if (user.failedLoginCount >= max) {
+            user.lockUntil = new Date(Date.now() + mins * 60 * 1000);
+            user.failedLoginCount = 0;
+          }
+          await user.save();
+        } catch {}
+        return res.status(401).json({ mensaje: "Contraseña actual incorrecta" });
+      }
+      if (typeof actual === "string" && actual === nueva) {
+        return res.status(400).json({ mensaje: "La nueva contraseña no puede ser igual a la actual" });
+      }
+    }
 
+    // Si era cuenta solo-OAuth, permitir setear sin 'actual'
+    if (!hadPassword && !actual) {
+      // ok
+    }
+
+    // Asignar nueva contraseña (pre-save hook hashea)
+    user.contraseña = nueva;
+    user.failedLoginCount = 0;
+    user.lockUntil = null;
+    await user.save();
+
+    // Revocar otras sesiones (mantén la actual si identificamos jti)
     try {
-      await RefreshToken.updateMany(
-        { userId: uid, revokedAt: null },
-        { $set: { revokedAt: new Date() } }
-      );
+      if (RefreshToken) {
+        let currentJti = null;
+        try {
+          const raw = req.cookies?.[REFRESH_COOKIE_NAME];
+          if (jwtUtils && typeof jwtUtils.verifyRefresh === "function" && raw) {
+            const payload = jwtUtils.verifyRefresh(raw);
+            currentJti = payload?.jti || null;
+          }
+        } catch {}
+        const q = { userId: user._id, revokedAt: null };
+        if (currentJti) q.jti = { $ne: currentJti };
+        await RefreshToken.updateMany(q, { $set: { revokedAt: new Date(), reason: "password_change" } });
+      }
     } catch {}
 
-    return res.json({ mensaje: "Contraseña actualizada" });
+    return res.json({ ok: true });
   } catch (e) {
     return res.status(500).json({ mensaje: "Error al cambiar contraseña" });
   }

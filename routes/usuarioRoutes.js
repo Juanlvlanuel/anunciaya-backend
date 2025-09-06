@@ -1,5 +1,5 @@
-// routes/usuarioRoutes-1.js
-// FastUX: añade expiresIn/issuedAt en /auth/refresh (compatibilidad total)
+// routes/usuarioRoutes-1.js (Google vinculacion)
+// Basado en tu archivo actual. Agrega endpoints para conexiones OAuth y vinculación/desvinculación de Google.
 
 const express = require("express");
 const path = require("path");
@@ -26,10 +26,10 @@ let securityController;
 try { securityController = require("../controllers/securityController"); }
 catch { securityController = require("../controllers/securityController"); }
 
-// Controlador de perfil (selección de perfil, actualización con 'ciudad' y nickname)
-let profileController;
-try { profileController = require("../controllers/profileController"); }
-catch { profileController = require("../controllers/profileController"); }
+// Controlador de Google (nuevo para vinculación)
+let googleController;
+try { googleController = require("../controllers/googleController"); }
+catch { googleController = require("../controllers/googleController"); }
 
 // ======== Multer para /me/avatar ======== 
 const uploadDir = path.join(__dirname, "../uploads");
@@ -56,9 +56,9 @@ router.use((req, res, next) => {
   const method = (req.method || "").toUpperCase();
   const url = req.originalUrl || req.url || "";
   if (url.includes("/me/avatar")) return next(); // permitir multipart
-  if (["POST", "PUT", "PATCH"].includes(method)) {
+  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
     const ct = (req.headers["content-type"] || "").toLowerCase();
-    if (!ct.includes("application/json")) {
+    if (["POST","PUT","PATCH"].includes(method) && !ct.includes("application/json")) {
       return res.status(415).json({ error: "Content-Type debe ser application/json" });
     }
   }
@@ -90,29 +90,34 @@ router.post("/auth/google",
 router.get("/auth/google", C.iniciarGoogleOAuth);
 router.get("/auth/google/callback", C.googleCallbackHandler);
 
-// Compatibilidad legacy
-router.post("/google",
-  rejectExtra(["credential", "nonce", "tipo", "perfil"]),
-  C.autenticarConGoogle
+// ==== Vinculación Google (nuevo) ====
+router.get("/oauth/connections", verificarToken, securityController.getOAuthConnections);
+router.post("/oauth/google/link",
+  verificarToken,
+  rejectExtra(["credential", "nonce"]),
+  googleController.linkGoogle
 );
-router.get("/google", C.iniciarGoogleOAuth);
-router.get("/google/callback", C.googleCallbackHandler);
+router.delete("/oauth/google/link",
+  verificarToken,
+  rejectExtra([]),
+  googleController.unlinkGoogle
+);
 
 // Perfil (autenticado)
 router.patch("/me",
   verificarToken,
   rejectExtra(["nombre", "telefono", "ciudad", "direccion", "fotoPerfil", "nickname"]),
-  profileController.actualizarPerfil
+  require("../controllers/profileController").actualizarPerfil
 );
 
 // === NEW: Verificar unicidad de nickname ===
-router.get("/nickname/check", profileController.checkNickname);
+router.get("/nickname/check", require("../controllers/profileController").checkNickname);
 
 // Actualizar nickname (campo dedicado)
 router.patch("/me/nickname",
   verificarToken,
   rejectExtra(["nickname"]),
-  profileController.actualizarNickname
+  require("../controllers/profileController").actualizarNickname
 );
 
 // Subir avatar (multipart/form-data, campo 'avatar')
@@ -145,6 +150,9 @@ router.get("/admin-test", verificarToken, requireAdmin, (req, res) => {
 // Sesión actual
 router.get("/session", verificarToken, C.getSession);
 
+// ======== Seguridad: contraseña ========
+router.patch("/password", verificarToken, securityController.cambiarPassword);
+
 // ======== Refresh (añade expiresIn/issuedAt) ========
 function parseExpiresToSeconds(expStr) {
   const s = String(expStr || "15m").trim().toLowerCase();
@@ -160,10 +168,6 @@ function parseExpiresToSeconds(expStr) {
 router.post("/auth/refresh", rejectExtra([]), require("../controllers/authController").refreshToken);
 
 /* ===================== LOGOUT ===================== */
-/**
- * Usamos las MISMAS opciones que el set de cookie del refresh en authController,
- * para garantizar que clearCookie realmente elimine 'rid' en HTTP (LAN/local) y HTTPS (prod).
- */
 const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
 
 function isHttps(req) {
@@ -198,11 +202,8 @@ router.post("/logout", async (req, res) => {
           issuer: process.env.JWT_ISS,
           audience: process.env.JWT_AUD,
         });
-        // Revocamos solo ese jti (la familia se maneja en refresh)
         await RefreshToken.updateOne({ jti, userId: uid }, { $set: { revokedAt: new Date() } });
-      } catch (_) {
-        // Token ilegible o ya inválido: igual limpiamos cookie
-      }
+      } catch (_) {}
       try { res.clearCookie(REFRESH_COOKIE_NAME, getRefreshCookieOpts(req)); } catch {}
       try {
         const https = isHttps(req);
@@ -215,25 +216,19 @@ router.post("/logout", async (req, res) => {
         });
       } catch {}
     }
-    // Respuesta idempotente
     res.setHeader("Cache-Control", "no-store");
     return res.json({ mensaje: "Sesión cerrada" });
   } catch {
-    // No exponemos detalles; logout debe ser siempre exitoso del lado del cliente
     res.setHeader("Cache-Control", "no-store");
     return res.json({ mensaje: "Sesión cerrada" });
   }
 });
 
 // ======== Verificación de correo ========
-// Test SMTP
 router.get("/auth/test-smtp", require("../controllers/emailController").testSMTP);
 const emailController = require("../controllers/emailController");
-
-// Reenviar verificación (no requiere auth estricta; usa correo o userId)
 router.post("/reenviar-verificacion",
   (req, res, next) => {
-    // Content-Type: application/json for consistency
     const ct = (req.headers["content-type"] || "").toLowerCase();
     if (!ct.includes("application/json")) {
       return res.status(415).json({ error: "Content-Type debe ser application/json" });
@@ -242,14 +237,10 @@ router.post("/reenviar-verificacion",
   },
   emailController.requestVerificationEmail
 );
-
-// Verificar correo por token (GET)
 router.get("/verificar-email", emailController.verifyEmail);
 router.get("/verificar-email/:token", emailController.verifyEmail);
 
-
 // ==== Teléfono (verificación OTP) ====
-// ✅ Punto clave: aseguramos que el require apunte al archivo real "phoneController.js"
 try {
   const { enviarCodigo, verificarCodigo } = require("../controllers/phoneController");
   router.post("/telefono/enviar-codigo",

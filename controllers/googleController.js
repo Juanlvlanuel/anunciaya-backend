@@ -1,5 +1,9 @@
-// controllers/googleController-1.js
-// FastUX: añade expiresIn/issuedAt en las respuestas, manteniendo compatibilidad.
+// controllers/googleController-1.js (con vinculación)
+// Mantiene tus endpoints actuales y agrega:
+//  - linkGoogle (POST /oauth/google/link)
+//  - unlinkGoogle (DELETE /oauth/google/link)
+//  - endurece autenticarConGoogle para respetar "autenticadoPorGoogle" (si existe)
+
 const { OAuth2Client } = require("google-auth-library");
 const { google } = require("googleapis");
 
@@ -105,10 +109,9 @@ const autenticarConGoogle = async (req, res) => {
     const issuedAt = Date.now();
 
     if (usuario) {
-      const attemptedRegister = Object.prototype.hasOwnProperty.call(req.body || {}, 'tipo') ||
-        Object.prototype.hasOwnProperty.call(req.body || {}, 'perfil');
-      if (attemptedRegister) {
-        return res.status(409).json({ mensaje: 'Este correo ya tiene una cuenta registrada. Inicia sesión para continuar.' });
+      // 👇 Si existe la cuenta pero NO está vinculada a Google, rechazar login por Google
+      if (Object.prototype.hasOwnProperty.call(usuario, "autenticadoPorGoogle") && !usuario.autenticadoPorGoogle) {
+        return res.status(403).json({ mensaje: "Google no está vinculado para esta cuenta. Vincula Google en Seguridad para usar este acceso." });
       }
       let access;
       try { access = signAccess(usuario._id); } catch (e) { return res.status(500).json({ mensaje: e.message || "Error firmando token" }); }
@@ -117,9 +120,9 @@ const autenticarConGoogle = async (req, res) => {
       const isProd = process.env.NODE_ENV === "production";
       res.cookie(process.env.REFRESH_COOKIE_NAME || "rid", refresh, {
         httpOnly: true,
-        secure: isProd,                 // false en local (HTTP), true en prod (HTTPS)
+        secure: isProd,
         sameSite: isProd ? "none" : "lax",
-        path: "/",                      // 👈 clave: no /api
+        path: "/",
         maxAge: 30 * 24 * 60 * 60 * 1000
       });
 
@@ -131,6 +134,7 @@ const autenticarConGoogle = async (req, res) => {
           correo: usuario.correo,
           tipo: usuario.tipo,
           perfil: usuario.perfil,
+          autenticadoPorGoogle: !!usuario.autenticadoPorGoogle,
         },
         expiresIn,
         issuedAt,
@@ -164,9 +168,9 @@ const autenticarConGoogle = async (req, res) => {
     const isProd = process.env.NODE_ENV === "production";
     res.cookie(process.env.REFRESH_COOKIE_NAME || "rid", refresh, {
       httpOnly: true,
-      secure: isProd,                 // false en local (HTTP), true en prod (HTTPS)
+      secure: isProd,
       sameSite: isProd ? "none" : "lax",
-      path: "/",                      // 👈 clave: no /api
+      path: "/",
       maxAge: 30 * 24 * 60 * 60 * 1000
     });
 
@@ -179,6 +183,7 @@ const autenticarConGoogle = async (req, res) => {
         correo: usuario.correo,
         tipo: usuario.tipo,
         perfil: usuario.perfil,
+        autenticadoPorGoogle: !!usuario.autenticadoPorGoogle,
       },
       expiresIn,
       issuedAt,
@@ -270,9 +275,9 @@ const googleCallbackHandler = async (req, res) => {
     const isProd = process.env.NODE_ENV === "production";
     res.cookie(process.env.REFRESH_COOKIE_NAME || "rid", refresh, {
       httpOnly: true,
-      secure: isProd,                 // false en local (HTTP), true en prod (HTTPS)
+      secure: isProd,
       sameSite: isProd ? "none" : "lax",
-      path: "/",                      // 👈 clave: no /api
+      path: "/",
       maxAge: 30 * 24 * 60 * 60 * 1000
     });
 
@@ -295,8 +300,93 @@ const googleCallbackHandler = async (req, res) => {
   }
 };
 
+/* ===================== Vinculación / Desvinculación ===================== */
+const linkGoogle = async (req, res) => {
+  try {
+    const uid = req.usuario?._id || req.usuarioId;
+    if (!uid) return res.status(401).json({ mensaje: "No autenticado" });
+
+    const credential = norm(req.body?.credential);
+    if (!credential) return res.status(400).json({ mensaje: "Token de Google no recibido" });
+
+    let ticket;
+    try {
+      ticket = await client.verifyIdToken({
+        idToken: credential,
+        audience: GOOGLE_AUDIENCES.length ? GOOGLE_AUDIENCES : undefined,
+      });
+    } catch (e) {
+      return res.status(401).json({ mensaje: "CREDENTIAL_INVALID_OR_EXPIRED" });
+    }
+
+    const payload = ticket.getPayload() || {};
+    const email = normEmail(payload.email);
+    const emailVerified = !!payload.email_verified;
+    if (!email || !emailVerified) return res.status(400).json({ mensaje: "Correo de Google inválido o no verificado" });
+
+    const user = await Usuario.findById(uid);
+    if (!user) return res.status(404).json({ mensaje: "Usuario no encontrado" });
+
+    // Seguridad: el email de Google debe coincidir con el de la cuenta
+    if (String(user.correo || "").toLowerCase() !== String(email).toLowerCase()) {
+      return res.status(409).json({ mensaje: "El correo de Google no coincide con el de tu cuenta" });
+    }
+
+    user.autenticadoPorGoogle = true;
+    await user.save();
+
+    return res.json({
+      linked: true,
+      usuario: {
+        _id: user._id,
+        nombre: user.nombre,
+        correo: user.correo,
+        tipo: user.tipo,
+        perfil: user.perfil,
+        autenticadoPorGoogle: true,
+      },
+    });
+  } catch (e) {
+    return res.status(500).json({ mensaje: "Error al vincular Google" });
+  }
+};
+
+const unlinkGoogle = async (req, res) => {
+  try {
+    const uid = req.usuario?._id || req.usuarioId;
+    if (!uid) return res.status(401).json({ mensaje: "No autenticado" });
+
+    const user = await Usuario.findById(uid).select("+contraseña +autenticadoPorFacebook +autenticadoPorGoogle");
+    if (!user) return res.status(404).json({ mensaje: "Usuario no encontrado" });
+
+    const hasOther = !!user.contraseña || !!user.autenticadoPorFacebook;
+    if (!hasOther) {
+      return res.status(400).json({ mensaje: "No puedes desvincular Google: agrega una contraseña o vincula otro método primero." });
+    }
+
+    user.autenticadoPorGoogle = false;
+    await user.save();
+
+    return res.json({
+      linked: false,
+      usuario: {
+        _id: user._id,
+        nombre: user.nombre,
+        correo: user.correo,
+        tipo: user.tipo,
+        perfil: user.perfil,
+        autenticadoPorGoogle: false,
+      },
+    });
+  } catch (e) {
+    return res.status(500).json({ mensaje: "Error al desvincular Google" });
+  }
+};
+
 module.exports = {
   autenticarConGoogle,
   iniciarGoogleOAuth,
   googleCallbackHandler,
+  linkGoogle,
+  unlinkGoogle,
 };
