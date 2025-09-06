@@ -51,6 +51,8 @@ const UsuarioSchema = new mongoose.Schema(
 
     // ===== Verificación de correo =====
     emailVerificado: { type: Boolean, default: false },
+    // Invalida tokens emitidos antes de esta fecha (logout inmediato)
+    logoutAt: { type: Date, default: null, index: true },
     emailVerificadoAt: { type: Date, default: null },
     emailVerificationToken: { type: String, select: false, default: null }, // sha256
     emailVerificationExpires: { type: Date, default: null, select: false },

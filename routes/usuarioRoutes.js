@@ -1,6 +1,4 @@
-// routes/usuarioRoutes-1.js (Google vinculacion)
-// Basado en tu archivo actual. Agrega endpoints para conexiones OAuth y vinculación/desvinculación de Google.
-
+// routes/usuarioRoutes-1.js (corregido: elimina duplicado decodeRefreshFromCookie)
 const express = require("express");
 const path = require("path");
 const fs = require("fs");
@@ -23,13 +21,17 @@ catch { C = require("../controllers/usuarioController"); }
 
 // Controlador de seguridad (si existe)
 let securityController;
-try { securityController = require("../controllers/securityController"); }
+try {
+  securityController = require("../controllers/securityController");
+}
 catch { securityController = require("../controllers/securityController"); }
 
-// Controlador de Google (nuevo para vinculación)
-let googleController;
-try { googleController = require("../controllers/googleController"); }
-catch { googleController = require("../controllers/googleController"); }
+const deviceSessionsCtrl = require("../controllers/deviceSessionsController");
+
+// Controlador de perfil (selección de perfil, actualización con 'ciudad' y nickname)
+let profileController;
+try { profileController = require("../controllers/profileController"); }
+catch { profileController = require("../controllers/profileController"); }
 
 // ======== Multer para /me/avatar ======== 
 const uploadDir = path.join(__dirname, "../uploads");
@@ -56,9 +58,9 @@ router.use((req, res, next) => {
   const method = (req.method || "").toUpperCase();
   const url = req.originalUrl || req.url || "";
   if (url.includes("/me/avatar")) return next(); // permitir multipart
-  if (["POST", "PUT", "PATCH", "DELETE"].includes(method)) {
+  if (["POST", "PUT", "PATCH"].includes(method)) {
     const ct = (req.headers["content-type"] || "").toLowerCase();
-    if (["POST","PUT","PATCH"].includes(method) && !ct.includes("application/json")) {
+    if (!ct.includes("application/json")) {
       return res.status(415).json({ error: "Content-Type debe ser application/json" });
     }
   }
@@ -90,34 +92,52 @@ router.post("/auth/google",
 router.get("/auth/google", C.iniciarGoogleOAuth);
 router.get("/auth/google/callback", C.googleCallbackHandler);
 
-// ==== Vinculación Google (nuevo) ====
-router.get("/oauth/connections", verificarToken, securityController.getOAuthConnections);
-router.post("/oauth/google/link",
-  verificarToken,
-  rejectExtra(["credential", "nonce"]),
-  googleController.linkGoogle
+// Compatibilidad legacy
+router.post("/google",
+  rejectExtra(["credential", "nonce", "tipo", "perfil"]),
+  C.autenticarConGoogle
 );
-router.delete("/oauth/google/link",
-  verificarToken,
-  rejectExtra([]),
-  googleController.unlinkGoogle
-);
+router.get("/google", C.iniciarGoogleOAuth);
+router.get("/google/callback", C.googleCallbackHandler);
+
+// === Estado de conexiones OAuth (para el panel de seguridad)
+router.get("/oauth/connections", verificarToken, async (req, res) => {
+  try {
+    const uid = req.usuario?._id || req.usuarioId;
+    if (!uid) return res.status(401).json({ mensaje: "No autenticado" });
+    const Usuario = require("../models/Usuario");
+    const u = await Usuario.findById(uid).select("autenticadoPorGoogle autenticadoPorFacebook").lean();
+    return res.json({
+      google: !!(u && u.autenticadoPorGoogle),
+      facebook: !!(u && u.autenticadoPorFacebook),
+    });
+  } catch (e) {
+    return res.status(500).json({ mensaje: "No se pudo obtener el estado de conexiones" });
+  }
+});
+
+// === Vincular / Desvincular Google desde el panel
+try {
+  const { linkGoogle, unlinkGoogle } = require("../controllers/googleController");
+  router.post("/oauth/google/link", verificarToken, linkGoogle);
+  router.delete("/oauth/google/link", verificarToken, unlinkGoogle);
+} catch { }
 
 // Perfil (autenticado)
 router.patch("/me",
   verificarToken,
   rejectExtra(["nombre", "telefono", "ciudad", "direccion", "fotoPerfil", "nickname"]),
-  require("../controllers/profileController").actualizarPerfil
+  profileController.actualizarPerfil
 );
 
 // === NEW: Verificar unicidad de nickname ===
-router.get("/nickname/check", require("../controllers/profileController").checkNickname);
+router.get("/nickname/check", profileController.checkNickname);
 
 // Actualizar nickname (campo dedicado)
 router.patch("/me/nickname",
   verificarToken,
   rejectExtra(["nickname"]),
-  require("../controllers/profileController").actualizarNickname
+  profileController.actualizarNickname
 );
 
 // Subir avatar (multipart/form-data, campo 'avatar')
@@ -147,25 +167,61 @@ router.get("/admin-test", verificarToken, requireAdmin, (req, res) => {
   return res.json({ mensaje: "Acceso admin concedido", admin: req.admin || { method: "jwt" } });
 });
 
+/** ========= Touch session from refresh cookie =========
+ * Actualiza/crea metadata de la sesión (ip, ua, lastUsedAt) usando la cookie de refresh.
+ * NO requiere nuevos archivos. Se ejecuta antes de /session y /sessions/ping.
+ */
+function decodeRefreshFromCookie(req) {
+  try {
+    const raw = req.cookies && req.cookies[(process.env.REFRESH_COOKIE_NAME || "rid")];
+    if (!raw) return null;
+    const payload = jwt.verify(raw, process.env.REFRESH_JWT_SECRET, {
+      issuer: process.env.JWT_ISS,
+      audience: process.env.JWT_AUD,
+    });
+    return payload; // { uid, jti, fam, iat, exp }
+  } catch {
+    return null;
+  }
+}
+
+async function touchSessionFromCookie(req, res, next) {
+  try {
+    const p = decodeRefreshFromCookie(req);
+    if (p && p.jti && p.uid) {
+      const ua = String(req.headers["user-agent"] || "");
+      const ip =
+        (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
+        req.ip ||
+        (req.connection && req.connection.remoteAddress) ||
+        null;
+      const now = new Date();
+
+      await RefreshToken.updateOne(
+        { jti: p.jti, userId: p.uid },
+        { $set: { ua, ip, lastUsedAt: now }, $setOnInsert: { createdAt: now } },
+        { upsert: true }
+      );
+    }
+  } catch { }
+  return next();
+}
+
 // Sesión actual
-router.get("/session", verificarToken, C.getSession);
+router.get("/session", verificarToken, touchSessionFromCookie, C.getSession);
+
+// ==== Sesiones y dispositivos ====
+router.get("/sessions", verificarToken, deviceSessionsCtrl.listSessions);
+router.post("/sessions/ping", verificarToken, touchSessionFromCookie, (req, res) => res.json({ ok: true }));
+router.delete("/sessions/:jti", verificarToken, deviceSessionsCtrl.revokeOne);
+router.post("/sessions/revoke-others", verificarToken, deviceSessionsCtrl.revokeOthers);
+router.post("/sessions/revoke-all", verificarToken, deviceSessionsCtrl.revokeAll);
 
 // ======== Seguridad: contraseña ========
 router.patch("/password", verificarToken, securityController.cambiarPassword);
 
-// ======== Refresh (añade expiresIn/issuedAt) ========
-function parseExpiresToSeconds(expStr) {
-  const s = String(expStr || "15m").trim().toLowerCase();
-  if (/^\d+$/.test(s)) return parseInt(s,10);
-  const m = s.match(/^(\d+)\s*([smhd])$/);
-  if (!m) return 900;
-  const n = parseInt(m[1],10);
-  const unit = m[2];
-  const map = { s:1, m:60, h:3600, d:86400 };
-  return n * (map[unit] || 60);
-}
-
-router.post("/auth/refresh", rejectExtra([]), require("../controllers/authController").refreshToken);
+// ======== Refresh ========
+router.post("/auth/refresh", touchSessionFromCookie, rejectExtra([]), require("../controllers/authController").refreshToken);
 
 /* ===================== LOGOUT ===================== */
 const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
@@ -202,9 +258,12 @@ router.post("/logout", async (req, res) => {
           issuer: process.env.JWT_ISS,
           audience: process.env.JWT_AUD,
         });
+        // Revocamos solo ese jti (la familia se maneja en refresh)
         await RefreshToken.updateOne({ jti, userId: uid }, { $set: { revokedAt: new Date() } });
-      } catch (_) {}
-      try { res.clearCookie(REFRESH_COOKIE_NAME, getRefreshCookieOpts(req)); } catch {}
+      } catch (_) {
+        // Token ilegible o ya inválido: igual limpiamos cookie
+      }
+      try { res.clearCookie(REFRESH_COOKIE_NAME, getRefreshCookieOpts(req)); } catch { }
       try {
         const https = isHttps(req);
         res.clearCookie(REFRESH_COOKIE_NAME, {
@@ -214,11 +273,13 @@ router.post("/logout", async (req, res) => {
           path: "/api",
           domain: process.env.COOKIE_DOMAIN || undefined,
         });
-      } catch {}
+      } catch { }
     }
+    // Respuesta idempotente
     res.setHeader("Cache-Control", "no-store");
     return res.json({ mensaje: "Sesión cerrada" });
   } catch {
+    // No exponemos detalles; logout debe ser siempre exitoso del lado del cliente
     res.setHeader("Cache-Control", "no-store");
     return res.json({ mensaje: "Sesión cerrada" });
   }

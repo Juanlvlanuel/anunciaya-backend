@@ -5,6 +5,7 @@ const http = require("http");
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
+const { touchOnRequest } = require("./middleware/rememberSessionMeta");
 const helmet = require("helmet");
 const compression = require("compression"); // 🚀 FastUX: compresión
 const sanitizeInput = require("./middleware/sanitizeInput");
@@ -132,6 +133,9 @@ app.options(/.*/, (req, res) => {
 });
 
 app.use(cookieParser());
+
+// 🔄 Record / update session metadata on every request (ua, ip, lastUsedAt, tokenHash)
+app.use(touchOnRequest);
 
 app.use((req, res, next) => {
   res.setHeader("Access-Control-Expose-Headers", "Content-Length, X-Request-Id, X-Sanitized, X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset, Retry-After");
@@ -283,7 +287,7 @@ if (IS_PROD) app.use(makeLimiter(__rateStores.global, {
 // Dev: sin límite en login/refresh/upload
 if (!IS_PROD) {
   app.use("/api/usuarios/login", (req, res, next) => {
-    try { res.setHeader("X-RateLimit-Limit", "unlimited"); res.setHeader("X-RateLimit-Remaining", "unlimited"); } catch {}
+    try { res.setHeader("X-RateLimit-Limit", "unlimited"); res.setHeader("X-RateLimit-Remaining", "unlimited"); } catch { }
     return next();
   });
   app.use("/api/usuarios/auth/refresh", (req, res, next) => next());
@@ -339,6 +343,52 @@ const io = new SocketIOServer(server, {
 });
 io.on("connection", (socket) => registerChatSocket(io, socket));
 registerCuponesSocket(io);
+
+// server-WS-patch.txt
+// Inserta esto en tu server.js después de crear el `io` y antes de `server.listen(...)`.
+// Si ya tienes Socket.IO, solo añade los bloques señalados.
+
+/* ====== INICIO PATCH WS FORCE-LOGOUT ====== */
+const jwt = require("jsonwebtoken");
+
+function parseCookie(str) {
+  const out = {};
+  (str || "").split(";").forEach((kv) => {
+    const i = kv.indexOf("=");
+    if (i > -1) out[kv.slice(0, i).trim()] = decodeURIComponent(kv.slice(i + 1));
+  });
+  return out;
+}
+
+app.set("io", io);
+
+// Autenticación por cookie `rid` en el handshake, y unión a rooms por usuario y por sesión
+io.use((socket, next) => {
+  try {
+    const cookies = parseCookie(socket.handshake.headers.cookie || "");
+    const raw = cookies[process.env.REFRESH_COOKIE_NAME || "rid"];
+    if (!raw) return next(new Error("No cookie rid"));
+    const payload = jwt.verify(raw, process.env.REFRESH_JWT_SECRET, {
+      issuer: process.env.JWT_ISS,
+      audience: process.env.JWT_AUD,
+    });
+    socket.data = { uid: payload.uid, jti: payload.jti };
+    return next();
+  } catch (e) {
+    return next(new Error("Unauthorized"));
+  }
+});
+
+io.on("connection", (socket) => {
+  const { uid, jti } = socket.data || {};
+  if (uid) socket.join(`user:${uid}`);
+  if (jti) socket.join(`session:${jti}`);
+});
+/* ====== FIN PATCH WS FORCE-LOGOUT ====== */
+
+
+
+
 
 // Not found + error handler (final middleware)
 app.all(/^\/(api|uploads)(\/|$)/, notFoundHandler);

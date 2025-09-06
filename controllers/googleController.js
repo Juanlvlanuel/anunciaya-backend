@@ -1,8 +1,6 @@
-// controllers/googleController-1.js (con vinculación)
-// Mantiene tus endpoints actuales y agrega:
-//  - linkGoogle (POST /oauth/google/link)
-//  - unlinkGoogle (DELETE /oauth/google/link)
-//  - endurece autenticarConGoogle para respetar "autenticadoPorGoogle" (si existe)
+// controllers/googleController-1.js (fix jti usage for session metadata)
+// Mantiene tus endpoints actuales y corrige la escritura de metadata de sesión
+// usando el jti del refresh recién generado (rtPayload.jti).
 
 const { OAuth2Client } = require("google-auth-library");
 const { google } = require("googleapis");
@@ -34,6 +32,13 @@ const GOOGLE_AUDIENCES = [CLIENT_ID].filter(Boolean);
 const client = new OAuth2Client(CLIENT_ID);
 
 const STATE_COOKIE = process.env.STATE_COOKIE_NAME || "g_state";
+
+function clientMeta(req){
+  const ua = String(req.headers["user-agent"] || "");
+  const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || (req.connection && req.connection.remoteAddress) || null;
+  return { ua, ip };
+};
+
 const stateCookieOpts = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
@@ -109,7 +114,7 @@ const autenticarConGoogle = async (req, res) => {
     const issuedAt = Date.now();
 
     if (usuario) {
-      // 👇 Si existe la cuenta pero NO está vinculada a Google, rechazar login por Google
+      // Si existe la cuenta pero NO está vinculada a Google, rechazar login por Google
       if (Object.prototype.hasOwnProperty.call(usuario, "autenticadoPorGoogle") && !usuario.autenticadoPorGoogle) {
         return res.status(403).json({ mensaje: "Google no está vinculado para esta cuenta. Vincula Google en Seguridad para usar este acceso." });
       }
@@ -126,6 +131,24 @@ const autenticarConGoogle = async (req, res) => {
         maxAge: 30 * 24 * 60 * 60 * 1000
       });
 
+      // ✅ FIX: guardar/actualizar metadata + tokenHash para esta sesión (jti)
+      try {
+        const { ua, ip } = clientMeta(req);
+        const RefreshToken = require("../models/RefreshToken");
+        const rtPayload = require("jsonwebtoken").decode(refresh);
+        const incomingHash = require("../helpers/tokens").hashToken(refresh);
+        if (rtPayload && rtPayload.jti) {
+          const set = { ua, ip, lastUsedAt: new Date(), tokenHash: incomingHash };
+          const setOnInsert = { createdAt: new Date() };
+          if (rtPayload.fam) setOnInsert.family = rtPayload.fam;
+          if (rtPayload.exp) setOnInsert.expiresAt = new Date(rtPayload.exp * 1000);
+          await RefreshToken.updateOne(
+            { jti: rtPayload.jti, userId: usuario._id },
+            { $set: set, $setOnInsert: setOnInsert },
+            { upsert: true }
+          );
+        }
+      } catch {}
       return res.status(200).json({
         token: access,
         usuario: {
@@ -174,6 +197,24 @@ const autenticarConGoogle = async (req, res) => {
       maxAge: 30 * 24 * 60 * 60 * 1000
     });
 
+    // ✅ FIX: guardar/actualizar metadata + tokenHash para esta sesión (jti)
+    try {
+      const { ua, ip } = clientMeta(req);
+      const RefreshToken = require("../models/RefreshToken");
+      const rtPayload = require("jsonwebtoken").decode(refresh);
+      const incomingHash = require("../helpers/tokens").hashToken(refresh);
+      if (rtPayload && rtPayload.jti) {
+        const set = { ua, ip, lastUsedAt: new Date(), tokenHash: incomingHash };
+        const setOnInsert = { createdAt: new Date() };
+        if (rtPayload.fam) setOnInsert.family = rtPayload.fam;
+        if (rtPayload.exp) setOnInsert.expiresAt = new Date(rtPayload.exp * 1000);
+        await RefreshToken.updateOne(
+          { jti: rtPayload.jti, userId: usuario._id },
+          { $set: set, $setOnInsert: setOnInsert },
+          { upsert: true }
+        );
+      }
+    } catch {}
     return res.status(200).json({
       mensaje: "Registro y Login con Google Exitoso",
       token: access,
@@ -281,6 +322,24 @@ const googleCallbackHandler = async (req, res) => {
       maxAge: 30 * 24 * 60 * 60 * 1000
     });
 
+    // ✅ FIX: guardar/actualizar metadata + tokenHash para esta sesión (jti)
+    try {
+      const { ua, ip } = clientMeta(req);
+      const RefreshToken = require("../models/RefreshToken");
+      const rtPayload = require("jsonwebtoken").decode(refresh);
+      const incomingHash = require("../helpers/tokens").hashToken(refresh);
+      if (rtPayload && rtPayload.jti) {
+        const set = { ua, ip, lastUsedAt: new Date(), tokenHash: incomingHash };
+        const setOnInsert = { createdAt: new Date() };
+        if (rtPayload.fam) setOnInsert.family = rtPayload.fam;
+        if (rtPayload.exp) setOnInsert.expiresAt = new Date(rtPayload.exp * 1000);
+        await RefreshToken.updateOne(
+          { jti: rtPayload.jti, userId: usuario._id },
+          { $set: set, $setOnInsert: setOnInsert },
+          { upsert: true }
+        );
+      }
+    } catch {}
     return res.redirect(
       `https://anunciaya-frontend.vercel.app/?googleToken=${access}&expiresIn=${expiresIn}&issuedAt=${issuedAt}`
     );

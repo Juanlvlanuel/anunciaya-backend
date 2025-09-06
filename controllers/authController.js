@@ -1,9 +1,5 @@
 // controllers/authController-1.js
-// Registro, Login y Refresh con rotación segura y "grace path" para refresh faltante.
-// + Logout: limpia la cookie de refresh correctamente.
-//
-// Ajustes: endurecemos set de cookie en refresh y añadimos no-store en la respuesta.
-// También normalizamos los campos { token, expiresIn, issuedAt } para el frontend.
+// Copia actual con metadata de sesión al crear/rotar refresh (ua, ip, lastUsedAt)
 
 const jwt = require("jsonwebtoken");
 const RefreshToken = require("../models/RefreshToken");
@@ -22,7 +18,12 @@ const {
 
 const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
 
-// === util: detectar HTTPS real o si corre detrás de proxy
+function clientMeta(req){
+  const ua = String(req.headers["user-agent"] || "");
+  const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || (req.connection && req.connection.remoteAddress) || null;
+  return { ua, ip };
+}
+
 function isHttps(req) {
   if (req && req.secure) return true;
   const xfp = String(req?.headers?.["x-forwarded-proto"] || "").toLowerCase();
@@ -31,7 +32,6 @@ function isHttps(req) {
 
 function getRefreshCookieOpts(req) {
   const https = isHttps(req);
-  // En HTTPS forzamos secure+none. En HTTP (local/LAN) usamos lax+no-secure.
   const secure = https ? true : false;
   const sameSite = https ? "none" : "lax";
 
@@ -56,7 +56,6 @@ function ensureSetRefreshCookie(req, res, token) {
     res.cookie(REFRESH_COOKIE_NAME, token, getRefreshCookieOpts(req));
   }
   try {
-    // exponer longitud si pasa por proxy
     res.setHeader("Access-Control-Expose-Headers", "Content-Length");
   } catch {}
 }
@@ -136,9 +135,24 @@ const registrarUsuario = async (req, res) => {
     } catch (_) {}
 
     const access = signAccess(nuevoUsuario._id);
-    const { refresh } = await signRefresh(nuevoUsuario._id);
+    const { refresh, jti } = await signRefresh(nuevoUsuario._id);
     ensureSetRefreshCookie(req, res, refresh);
-
+    try {
+      const { ua, ip } = clientMeta(req);
+      try {
+  const rtPayload = jwt.decode(refresh);
+  const incomingHash = require("../helpers/tokens").hashToken(refresh);
+  const set = { ua, ip, lastUsedAt: new Date(), tokenHash: incomingHash };
+  const setOnInsert = { createdAt: new Date() };
+  if (rtPayload && rtPayload.fam) setOnInsert.family = rtPayload.fam;
+  if (rtPayload && rtPayload.exp) setOnInsert.expiresAt = new Date(rtPayload.exp * 1000);
+  await RefreshToken.updateOne(
+    { jti, userId: nuevoUsuario._id },
+    { $set: set, $setOnInsert: setOnInsert },
+    { upsert: true }
+  );
+} catch {}
+} catch {}
     res.setHeader("Cache-Control", "no-store");
     return res.status(201).json({
       mensaje: "Registro Exitoso",
@@ -241,9 +255,24 @@ const loginUsuario = async (req, res) => {
     }
 
     const access = signAccess(usuario._id);
-    const { refresh } = await signRefresh(usuario._id);
+    const { refresh, jti } = await signRefresh(usuario._id);
     ensureSetRefreshCookie(req, res, refresh);
-
+    try {
+      const { ua, ip } = clientMeta(req);
+      try {
+  const rtPayload = jwt.decode(refresh);
+  const incomingHash = require("../helpers/tokens").hashToken(refresh);
+  const set = { ua, ip, lastUsedAt: new Date(), tokenHash: incomingHash };
+  const setOnInsert = { createdAt: new Date() };
+  if (rtPayload && rtPayload.fam) setOnInsert.family = rtPayload.fam;
+  if (rtPayload && rtPayload.exp) setOnInsert.expiresAt = new Date(rtPayload.exp * 1000);
+  await RefreshToken.updateOne(
+    { jti, userId: usuario._id },
+    { $set: set, $setOnInsert: setOnInsert },
+    { upsert: true }
+  );
+} catch {}
+} catch {}
     const actualizado = await Usuario.findById(usuario._id).lean();
     if (!actualizado) {
       return res.status(404).json({ mensaje: "Usuario no encontrado después de login" });
@@ -258,7 +287,7 @@ const loginUsuario = async (req, res) => {
   }
 };
 
-/* ===================== REFRESH TOKEN (rotación segura + grace) ===================== */
+/* ===================== REFRESH TOKEN ===================== */
 const refreshToken = async (req, res) => {
   try {
     const raw = req.cookies?.[REFRESH_COOKIE_NAME];
@@ -275,7 +304,7 @@ const refreshToken = async (req, res) => {
       return res.status(401).json({ mensaje: "Refresh inválido" });
     }
 
-    const incomingHash = hashToken(raw);
+    const incomingHash = require("../helpers/tokens").hashToken(raw);
     let doc = await RefreshToken.findOne({ jti: payload.jti, userId: payload.uid });
 
     if (!doc) {
@@ -303,10 +332,19 @@ const refreshToken = async (req, res) => {
     await doc.save();
 
     const token = signAccess(payload.uid);
-    const { refresh: newRefresh } = await signRefresh(payload.uid, payload.fam);
-
+    const { refresh: newRefresh, jti: newJti } = await signRefresh(payload.uid, payload.fam);
     ensureSetRefreshCookie(req, res, newRefresh);
-
+    try {
+      const { ua, ip } = clientMeta(req);
+      try {
+  const newIncomingHash = require("../helpers/tokens").hashToken(newRefresh);
+  await RefreshToken.updateOne(
+    { jti: newJti, userId: payload.uid },
+    { $set: { ua, ip, lastUsedAt: new Date(), tokenHash: newIncomingHash }, $setOnInsert: { createdAt: new Date() } },
+    { upsert: true }
+  );
+} catch {}
+} catch {}
     const expiresIn = getAccessTTLSeconds();
     res.setHeader("Cache-Control", "no-store");
     return res.json({ token, expiresIn, issuedAt: Date.now() });
@@ -318,7 +356,7 @@ const refreshToken = async (req, res) => {
   }
 };
 
-/* ===================== LOGOUT (limpia cookie de refresh) ===================== */
+/* ===================== LOGOUT ===================== */
 const logoutUsuario = async (req, res) => {
   try {
     clearRefreshCookieAll(req, res);
