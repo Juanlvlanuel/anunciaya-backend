@@ -1,240 +1,217 @@
 // controllers/deviceSessionsController-1.js
-// Lista y revoca sesiones con cierre instantáneo (targeting directo por socket jti/uid)
+// Cierre de sesiones en tiempo real vía Socket.IO.
+// Funciona incluso entre distintos hosts (localhost / 127 / LAN) al emitir por user/session/family.
+
 const jwt = require("jsonwebtoken");
 const RefreshToken = require("../models/RefreshToken");
 const Usuario = require("../models/Usuario");
 
-const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
+const { REFRESH_COOKIE_NAME } = require("../utils/jwt") || { REFRESH_COOKIE_NAME: (process.env.REFRESH_COOKIE_NAME || "rid") };
 
-function decodeRefresh(raw) {
+function getIO(req) {
+  return req && req.app && req.app.get && req.app.get("io");
+}
+
+function isHttps(req) {
+  return (req?.protocol === "https") || (req?.headers && String(req.headers["x-forwarded-proto"] || "").includes("https"));
+}
+
+function decodeRefreshFromCookie(req) {
   try {
+    const raw = req.cookies && req.cookies[(process.env.REFRESH_COOKIE_NAME || "rid")];
     if (!raw) return null;
-    const payload = jwt.verify(raw, process.env.REFRESH_JWT_SECRET, {
+    return jwt.verify(raw, process.env.REFRESH_JWT_SECRET, {
       issuer: process.env.JWT_ISS,
       audience: process.env.JWT_AUD,
     });
-    return payload; // { jti, uid, iat, exp }
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-function wsEmit(req, room, event, payload) {
+
+async function emitForceLogout(io, { uid, fam, jti, reason }) {
   try {
-    const io = req.app && req.app.get && req.app.get("io");
     if (!io) return;
-    if (Array.isArray(room)) {
-      io.to(room).emit(event, payload);
-    } else {
-      io.to(String(room)).emit(event, payload);
+    if (jti) io.to(`session:${jti}`).emit("force-logout", { scope: "session", jti, reason });
+    if (fam) io.to(`family:${fam}`).emit("force-logout", { scope: "family", fam, reason });
+
+    // Fallback: si el cliente no unió family/session (p. ej., autenticado solo por access token),
+    // emitimos solo a los sockets del usuario cuya socket.data.fam coincida.
+    if (uid && fam) {
+      try {
+        const sockets = await io.in(`user:${uid}`).fetchSockets();
+        for (const s of sockets) {
+          if (s?.data && s.data.fam === fam) {
+            s.emit("force-logout", { scope: "family", fam, reason, via: "fetchSockets" });
+          }
+        }
+      } catch { }
     }
-  } catch {}
+
+    // Fallback adicional: buscar por jti exacto entre TODOS los sockets (último recurso)
+    if (jti) {
+      try {
+        const all = await io.fetchSockets();
+        for (const s of all) {
+          if (s?.data && String(s.data.jti || "") === String(jti)) {
+            s.emit("force-logout", { scope: "session", jti, reason, via: "fetchSockets:all" });
+          }
+        }
+      } catch { }
+    }
+  } catch { }
 }
 
-function wsKickByJti(req, jti) {
+
+function clearRefreshCookie(req, res) {
   try {
-    const io = req.app && req.app.get && req.app.get("io");
-    if (!io) return;
-    const sockets = io.sockets.sockets; // Map
-    for (const [, s] of sockets) {
-      const sjti = s && s.data && s.data.jti;
-      if (sjti && sjti === jti) {
-        s.emit("force-logout", { scope: "one", jti });
-      }
-    }
-  } catch {}
+    const https = isHttps(req);
+    // limpiar en "/" y también por compatibilidad en "/api"
+    res.clearCookie((process.env.REFRESH_COOKIE_NAME || "rid"), {
+      httpOnly: true,
+      sameSite: https ? "none" : "lax",
+      secure: https,
+      path: "/",
+      domain: process.env.COOKIE_DOMAIN || undefined,
+    });
+    res.clearCookie((process.env.REFRESH_COOKIE_NAME || "rid"), {
+      httpOnly: true,
+      sameSite: https ? "none" : "lax",
+      secure: https,
+      path: "/api",
+      domain: process.env.COOKIE_DOMAIN || undefined,
+    });
+  } catch { }
 }
 
-function wsKickByUid(req, uid, exceptJti = null) {
+async function listSessions(req, res) {
   try {
-    const io = req.app && req.app.get && req.app.get("io");
-    if (!io) return;
-    const sockets = io.sockets.sockets;
-    for (const [, s] of sockets) {
-      const suid = s && s.data && s.data.uid;
-      const sjti = s && s.data && s.data.jti;
-      if (!suid) continue;
-      if (String(suid) !== String(uid)) continue;
-      if (exceptJti && sjti && String(sjti) === String(exceptJti)) continue;
-      s.emit("force-logout", { scope: "user", except: exceptJti || null });
-    }
-  } catch {}
-}
-
-// GET /api/usuarios/sessions
-const listSessions = async (req, res) => {
-  try {
-    const uid = req.usuario?._id || req.usuarioId;
+    const p = decodeRefreshFromCookie(req);
+    const uid = (req?.usuario && (req.usuario._id || req.usuario.id)) || (p && p.uid);
+    const currentJti = p && p.jti;
     if (!uid) return res.status(401).json({ mensaje: "No autenticado" });
 
-    const curr = decodeRefresh(req.cookies?.[REFRESH_COOKIE_NAME]) || null;
-    const currentJti = curr?.jti || null;
+    const docs = await RefreshToken.find({ userId: uid }).sort({ lastUsedAt: -1, createdAt: -1 }).lean();
 
-    // Tocar metadata de la sesión actual
-    if (currentJti) {
-      const ua = String(req.headers["user-agent"] || "");
-      const ip =
-        (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
-        req.ip ||
-        (req.connection && req.connection.remoteAddress) ||
-        null;
-      const now = new Date();
-      try {
-        await RefreshToken.updateOne(
-          { jti: currentJti, userId: uid },
-          { $set: { ua, ip, lastUsedAt: now }, $setOnInsert: { createdAt: now } },
-          { upsert: true }
-        );
-      } catch {}
-    }
-
-    const tokens = await RefreshToken.find({
-      userId: uid,
-      $or: [{ revokedAt: null }, { revokedAt: { $exists: false } }],
-    })
-      .sort({ lastUsedAt: -1, createdAt: -1 })
-      .lean();
-
-    const items = (tokens || []).map((t) => ({
-      id: t.jti,
-      createdAt: t.createdAt || null,
-      lastUsedAt: t.lastUsedAt || null,
-      ip: t.ip || null,
-      ua: t.ua || null,
-      current: currentJti && t.jti === currentJti,
+    const sessions = docs.map(d => ({
+      id: d.jti,
+      jti: d.jti,
+      family: d.family || d.fam || null,
+      current: currentJti ? (String(d.jti) === String(currentJti)) : false,
+      revokedAt: d.revokedAt || null,
+      lastUsedAt: d.lastUsedAt || null,
+      ip: d.ip || null,
+      ua: d.ua || null,
+      createdAt: d.createdAt || null,
+      updatedAt: d.updatedAt || null,
+      expiresAt: d.expiresAt || null,
     }));
 
-    if (items.length === 0 && currentJti) {
-      const ua = String(req.headers["user-agent"] || "");
-      const ip =
-        (req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
-        req.ip ||
-        (req.connection && req.connection.remoteAddress) ||
-        null;
-      items.push({
-        id: currentJti,
-        createdAt: null,
-        lastUsedAt: new Date(),
-        ip,
-        ua,
-        current: true,
-      });
-    }
+    const now = Date.now();
+    const active = sessions.filter(s => !s.revokedAt && (!s.expiresAt || new Date(s.expiresAt).getTime() > now));
 
-    return res.json({ sessions: items });
+    return res.json({ sessions: active });
   } catch (e) {
-    return res.status(500).json({ mensaje: "Error al listar sesiones" });
+    return res.status(500).json({ mensaje: "No se pudieron listar las sesiones" });
   }
-};
+}
 
-// DELETE /api/usuarios/sessions/:jti
-const revokeOne = async (req, res) => {
+async function revokeOne(req, res) {
   try {
-    const uid = req.usuario?._id || req.usuarioId;
+    const p = decodeRefreshFromCookie(req);
+    const uid = (req?.usuario && (req.usuario._id || req.usuario.id)) || (p && p.uid);
     if (!uid) return res.status(401).json({ mensaje: "No autenticado" });
 
-    const target = String(req.params?.jti || "").trim();
-    if (!target) return res.status(400).json({ mensaje: "Falta id de sesión" });
+    const target = String(req.params.jti || req.params.id || "");
+    if (!target) return res.status(400).json({ mensaje: "Falta jti" });
 
-    const curr = decodeRefresh(req.cookies?.[REFRESH_COOKIE_NAME]) || null;
-    const isCurrent = !!(curr && curr.jti && curr.jti === target);
-
-    await RefreshToken.updateOne(
-      { jti: target, userId: uid },
+    // Revocar en DB
+    const upd = await RefreshToken.updateOne(
+      { userId: uid, jti: target, $or: [{ revokedAt: null }, { revokedAt: { $exists: false } }] },
       { $set: { revokedAt: new Date() } }
     );
 
-    // Señal al socket con ese JTI (targeting directo)
-    wsKickByJti(req, target);
-    // También por room (por si aplica)
-    wsEmit(req, `session:${target}`, "force-logout", { scope: "one", jti: target });
+    // Obtener doc para saber family
+    const doc = await RefreshToken.findOne({ userId: uid, jti: target }).lean();
 
-    if (isCurrent) {
-      const https =
-        req.secure || String(req.headers["x-forwarded-proto"] || "").toLowerCase() === "https";
-      try {
-        res.clearCookie(REFRESH_COOKIE_NAME, {
-          httpOnly: true,
-          sameSite: https ? "none" : "lax",
-          secure: https,
-          path: "/",
-          domain: process.env.COOKIE_DOMAIN || undefined,
-        });
-      } catch {}
-      try {
-        await Usuario.updateOne({ _id: uid }, { $set: { logoutAt: new Date() } });
-      } catch {}
+    // Emitir WS de cierre dirigido
+    const io = getIO(req);
+    if (io) {
+      const fam = doc && (doc.family || doc.fam);
+      await emitForceLogout(io, { uid: uid, fam, jti: target, reason: "revoked" });
     }
 
-    return res.json({ revoked: true, jti: target });
+    return res.json({ revoked: upd.modifiedCount || 0 });
   } catch (e) {
-    return res.status(500).json({ mensaje: "No se pudo revocar la sesión" });
+    return res.status(500).json({ mensaje: "No se pudo cerrar la sesión" });
   }
-};
+}
 
-// POST /api/usuarios/sessions/revoke-others
-const revokeOthers = async (req, res) => {
+async function revokeOthers(req, res) {
   try {
-    const uid = req.usuario?._id || req.usuarioId;
+    const p = decodeRefreshFromCookie(req);
+    const uid = (req?.usuario && (req.usuario._id || req.usuario.id)) || (p && p.uid);
+    const currentJti = p && p.jti;
     if (!uid) return res.status(401).json({ mensaje: "No autenticado" });
 
-    const curr = decodeRefresh(req.cookies?.[REFRESH_COOKIE_NAME]) || null;
-    const currentJti = curr?.jti || null;
+    const docs = await RefreshToken.find({ userId: uid, jti: { $ne: currentJti }, $or: [{ revokedAt: null }, { revokedAt: { $exists: false } }] }).lean();
 
-    const q = { userId: uid, $or: [{ revokedAt: null }, { revokedAt: { $exists: false } }] };
-    if (currentJti) q.jti = { $ne: currentJti };
-
-    const { modifiedCount } = await RefreshToken.updateMany(q, {
-      $set: { revokedAt: new Date() },
-    });
-
-    // Señal inmediata a todos los sockets del usuario excepto el actual
-    wsKickByUid(req, uid, currentJti);
-
-    try {
-      await Usuario.updateOne({ _id: uid }, { $set: { logoutAt: new Date() } });
-    } catch {}
-
-    return res.json({ revoked: modifiedCount || 0 });
-  } catch (e) {
-    return res.status(500).json({ mensaje: "No se pudieron revocar las otras sesiones" });
-  }
-};
-
-// POST /api/usuarios/sessions/revoke-all
-const revokeAll = async (req, res) => {
-  try {
-    const uid = req.usuario?._id || req.usuarioId;
-    if (!uid) return res.status(401).json({ mensaje: "No autenticado" });
-
-    const { modifiedCount } = await RefreshToken.updateMany(
-      { userId: uid, $or: [{ revokedAt: null }, { revokedAt: { $exists: false } }] },
+    // Marcar como revocados
+    await RefreshToken.updateMany(
+      { userId: uid, jti: { $in: docs.map(d => d.jti) } },
       { $set: { revokedAt: new Date() } }
     );
 
-    const https =
-      req.secure || String(req.headers["x-forwarded-proto"] || "").toLowerCase() === "https";
-    try {
-      res.clearCookie(REFRESH_COOKIE_NAME, {
-        httpOnly: true,
-        sameSite: https ? "none" : "lax",
-        secure: https,
-        path: "/",
-        domain: process.env.COOKIE_DOMAIN || undefined,
-      });
-    } catch {}
+    // Emitir por cada familia/sesión encontrada (no afectamos a la actual)
+    const io = getIO(req);
+    if (io) {
+      const seenFam = new Set();
+      for (const d of docs) {
+        const fam = d && (d.family || d.fam);
+        await emitForceLogout(io, { uid: uid, fam, jti: d && d.jti, reason: "revoked-others" });
+        if (fam) seenFam.add(fam);
+      }
+    }
+
+    return res.json({ revoked: docs.length });
+  } catch (e) {
+    return res.status(500).json({ mensaje: "No se pudieron cerrar las otras sesiones" });
+  }
+}
+
+async function revokeAll(req, res) {
+  try {
+    const p = decodeRefreshFromCookie(req);
+    const uid = (req?.usuario && (req.usuario._id || req.usuario.id)) || (p && p.uid);
+    if (!uid) return res.status(401).json({ mensaje: "No autenticado" });
+
+    const docs = await RefreshToken.find({ userId: uid, $or: [{ revokedAt: null }, { revokedAt: { $exists: false } }] }).lean();
+
+    // Revocar todo
+    await RefreshToken.updateMany({ userId: uid }, { $set: { revokedAt: new Date() } });
+
+    // Limpiar cookie local
+    clearRefreshCookie(req, res);
+
+    // Avisar a todos los sockets del usuario (incluida esta sesión)
+    const io = getIO(req);
+    if (io) {
+      const sockets = await io.in(`user:${uid}`).fetchSockets();
+      console.log("[FORCE LOGOUT] Emitiendo a user:%s — sockets activos: %d", uid, sockets.length);
+      io.to(`user:${uid}`).emit("force-logout", { scope: "user", uid: String(uid), reason: "revoked-all" });
+      const seenFam = new Set();
+      for (const d of docs) {
+        await emitForceLogout(io, { uid: uid, fam: d && (d.family || d.fam), jti: d && d.jti, reason: "revoked-all" });
+      }
+    }
 
     try {
       await Usuario.updateOne({ _id: uid }, { $set: { logoutAt: new Date() } });
-    } catch {}
+    } catch { }
 
-    // Señal inmediata a todos los sockets del usuario (incluido el actual)
-    wsKickByUid(req, uid, null);
-
-    return res.json({ revoked: modifiedCount || 0 });
+    return res.json({ revoked: docs.length });
   } catch (e) {
-    return res.status(500).json({ mensaje: "No se pudieron revocar las sesiones" });
+    return res.status(500).json({ mensaje: "No se pudieron cerrar todas las sesiones" });
   }
-};
+}
 
 module.exports = { listSessions, revokeOne, revokeOthers, revokeAll };

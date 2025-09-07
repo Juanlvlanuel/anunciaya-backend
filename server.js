@@ -1,4 +1,3 @@
-// server-1.js
 require("dotenv").config();
 const path = require("path");
 const http = require("http");
@@ -255,7 +254,7 @@ function setRateHeaders(res, limit, remaining, resetMs) {
   res.setHeader("X-RateLimit-Limit", String(limit));
   res.setHeader("X-RateLimit-Remaining", String(remaining < 0 ? 0 : remaining));
   res.setHeader("X-RateLimit-Reset", String(Math.ceil(resetMs / 1000)));
-  appendExposeHeaders(res, ["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset", "Retry-After"]);
+  appendExposeHeaders(res, ["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset, Retry-After"]);
 }
 
 function makeLimiter(store, { windowMs, max, keyFn, skipFn }) {
@@ -365,24 +364,75 @@ app.set("io", io);
 // Autenticación por cookie `rid` en el handshake, y unión a rooms por usuario y por sesión
 io.use((socket, next) => {
   try {
-    const cookies = parseCookie(socket.handshake.headers.cookie || "");
+    const headers = socket.handshake.headers || {};
+    const cookies = parseCookie(headers.cookie || "");
     const raw = cookies[process.env.REFRESH_COOKIE_NAME || "rid"];
-    if (!raw) return next(new Error("No cookie rid"));
-    const payload = jwt.verify(raw, process.env.REFRESH_JWT_SECRET, {
-      issuer: process.env.JWT_ISS,
-      audience: process.env.JWT_AUD,
-    });
-    socket.data = { uid: payload.uid, jti: payload.jti };
-    return next();
+
+    // 1) Prefer cookie 'rid' (refresh)
+    if (raw) {
+      const payload = jwt.verify(raw, process.env.REFRESH_JWT_SECRET, {
+        issuer: process.env.JWT_ISS,
+        audience: process.env.JWT_AUD,
+      });
+      socket.data = { uid: payload.uid, jti: payload.jti, fam: payload.fam || null };
+      // Compat con chatSocket que usa socket.data.usuarioId
+      socket.data.usuarioId = socket.data.uid;
+      return next();
+    }
+
+    // 2) Fallback: Authorization Bearer (access)
+    const auth = (socket.handshake.auth && socket.handshake.auth.token) || headers.authorization || "";
+    const m = String(auth || "").match(/^Bearer\s+(.+)$/i);
+    if (m) {
+      try {
+        const ap = jwt.verify(m[1], process.env.JWT_SECRET, {
+          issuer: process.env.JWT_ISS,
+          audience: process.env.JWT_AUD,
+        });
+        const uid = ap.uid || ap.sub || ap.userId || ap._id;
+        if (uid) {
+          socket.data = { uid, jti: null, fam: null, usuarioId: uid };
+          return next();
+        }
+      } catch (_) { /* ignore */ }
+    }
+
+    return next(new Error("Unauthorized"));
   } catch (e) {
     return next(new Error("Unauthorized"));
   }
 });
 
 io.on("connection", (socket) => {
-  const { uid, jti } = socket.data || {};
+  socket.on("session:joinAll", () => {
+    const { uid, jti, fam } = socket.data || {};
+    if (uid) socket.join(`user:${uid}`);
+    if (jti) socket.join(`session:${jti}`);
+    if (fam) socket.join(`family:${fam}`);
+  });
+
+  // 👇 **mínimo cambio**: unirse también a family:<fam> y soportar session:update
+  const { uid, jti, fam } = socket.data || {};
   if (uid) socket.join(`user:${uid}`);
   if (jti) socket.join(`session:${jti}`);
+  if (fam) socket.join(`family:${fam}`);
+
+  socket.on("session:update", (payload = {}) => {
+    try {
+      const nextJti = payload && payload.jti;
+      const nextFam = payload && payload.fam;
+      if (nextJti && nextJti !== socket.data.jti) {
+        if (socket.data.jti) socket.leave(`session:${socket.data.jti}`);
+        socket.data.jti = nextJti;
+        socket.join(`session:${nextJti}`);
+      }
+      if (nextFam && nextFam !== socket.data.fam) {
+        if (socket.data.fam) socket.leave(`family:${socket.data.fam}`);
+        socket.data.fam = nextFam;
+        socket.join(`family:${nextFam}`);
+      }
+    } catch {}
+  });
 });
 /* ====== FIN PATCH WS FORCE-LOGOUT ====== */
 
@@ -395,10 +445,13 @@ app.all(/^\/(api|uploads)(\/|$)/, notFoundHandler);
 app.use(errorHandler);
 
 const PORT = process.env.PORT || 5000;
-server.listen(PORT, () => {
-  console.log(`🚀 API + WS en puerto ${PORT}`);
+const HOST = process.env.HOST || "0.0.0.0";
+
+server.listen(PORT, HOST, () => {
+  console.log(`🚀 API + WS en ${HOST}:${PORT}`);
   console.log(`[CORS] Allowed: ${ALLOWED_ORIGINS.join(", ") || "(default)"}`);
 });
+
 
 try {
   if (process.env.HEADERS_TIMEOUT_MS) server.headersTimeout = parseInt(process.env.HEADERS_TIMEOUT_MS, 10);

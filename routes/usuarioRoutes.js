@@ -211,11 +211,11 @@ async function touchSessionFromCookie(req, res, next) {
 router.get("/session", verificarToken, touchSessionFromCookie, C.getSession);
 
 // ==== Sesiones y dispositivos ====
-router.get("/sessions", verificarToken, deviceSessionsCtrl.listSessions);
-router.post("/sessions/ping", verificarToken, touchSessionFromCookie, (req, res) => res.json({ ok: true }));
-router.delete("/sessions/:jti", verificarToken, deviceSessionsCtrl.revokeOne);
-router.post("/sessions/revoke-others", verificarToken, deviceSessionsCtrl.revokeOthers);
-router.post("/sessions/revoke-all", verificarToken, deviceSessionsCtrl.revokeAll);
+router.get("/sessions", touchSessionFromCookie, deviceSessionsCtrl.listSessions);
+router.post("/sessions/ping", touchSessionFromCookie, (req, res) => res.json({ ok: true }));
+router.delete("/sessions/:jti", deviceSessionsCtrl.revokeOne);
+router.post("/sessions/revoke-others", deviceSessionsCtrl.revokeOthers);
+router.post("/sessions/revoke-all", deviceSessionsCtrl.revokeAll);
 
 // ======== Seguridad: contraseña ========
 router.patch("/password", verificarToken, securityController.cambiarPassword);
