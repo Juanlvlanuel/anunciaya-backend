@@ -1,9 +1,11 @@
 // controllers/authController-1.js
 // Copia actual con metadata de sesión al crear/rotar refresh (ua, ip, lastUsedAt)
+// ✅ Incluye normalización de 2FA (headers y múltiples alias) + tolerancia de tiempo y logs de depuración
 
 const jwt = require("jsonwebtoken");
 const RefreshToken = require("../models/RefreshToken");
 const { signAccess, signRefresh, revokeFamily, hashToken, getAccessTTLSeconds } = require("../helpers/tokens");
+const speakeasy = require("speakeasy");
 
 const {
   Usuario,
@@ -18,7 +20,7 @@ const {
 
 const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
 
-function clientMeta(req){
+function clientMeta(req) {
   const ua = String(req.headers["user-agent"] || "");
   const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || (req.connection && req.connection.remoteAddress) || null;
   return { ua, ip };
@@ -31,22 +33,21 @@ function isHttps(req) {
 }
 
 function getRefreshCookieOpts(req) {
-  const https = isHttps(req);
-  const secure = https ? true : false;
-  const sameSite = https ? "none" : "lax";
-
   return {
     httpOnly: true,
-    sameSite,
-    secure,
+    sameSite: "lax",
+    secure: false,
     path: "/",
-    maxAge: 30 * 24 * 60 * 60 * 1000,
-    domain: process.env.COOKIE_DOMAIN || undefined,
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 días
+    domain: "localhost", // 🔒 Obligatorio para que funcione solo con http://localhost
   };
 }
 
+
+
+
 function clearRefreshCookieAll(req, res) {
-  try { res.clearCookie(REFRESH_COOKIE_NAME, getRefreshCookieOpts(req)); } catch (_) {}
+  try { res.clearCookie(REFRESH_COOKIE_NAME, getRefreshCookieOpts(req)); } catch (_) { }
 }
 
 function ensureSetRefreshCookie(req, res, token) {
@@ -57,7 +58,7 @@ function ensureSetRefreshCookie(req, res, token) {
   }
   try {
     res.setHeader("Access-Control-Expose-Headers", "Content-Length");
-  } catch {}
+  } catch { }
 }
 
 /* ===================== REGISTRO TRADICIONAL ===================== */
@@ -130,9 +131,9 @@ const registrarUsuario = async (req, res) => {
     try {
       const { requestVerificationEmail } = require("./emailController");
       const fakeReq = { body: { userId: nuevoUsuario._id, correo: nuevoUsuario.correo } };
-      const fakeRes = { json: () => {}, status: () => ({ json: () => {} }) };
+      const fakeRes = { json: () => { }, status: () => ({ json: () => { } }) };
       requestVerificationEmail(fakeReq, fakeRes);
-    } catch (_) {}
+    } catch (_) { }
 
     const access = signAccess(nuevoUsuario._id);
     const { refresh, jti } = await signRefresh(nuevoUsuario._id);
@@ -140,19 +141,19 @@ const registrarUsuario = async (req, res) => {
     try {
       const { ua, ip } = clientMeta(req);
       try {
-  const rtPayload = jwt.decode(refresh);
-  const incomingHash = require("../helpers/tokens").hashToken(refresh);
-  const set = { ua, ip, lastUsedAt: new Date(), tokenHash: incomingHash };
-  const setOnInsert = { createdAt: new Date() };
-  if (rtPayload && rtPayload.fam) setOnInsert.family = rtPayload.fam;
-  if (rtPayload && rtPayload.exp) setOnInsert.expiresAt = new Date(rtPayload.exp * 1000);
-  await RefreshToken.updateOne(
-    { jti, userId: nuevoUsuario._id },
-    { $set: set, $setOnInsert: setOnInsert },
-    { upsert: true }
-  );
-} catch {}
-} catch {}
+        const rtPayload = jwt.decode(refresh);
+        const incomingHash = require("../helpers/tokens").hashToken(refresh);
+        const set = { ua, ip, lastUsedAt: new Date(), tokenHash: incomingHash };
+        const setOnInsert = { createdAt: new Date() };
+        if (rtPayload && rtPayload.fam) setOnInsert.family = rtPayload.fam;
+        if (rtPayload && rtPayload.exp) setOnInsert.expiresAt = new Date(rtPayload.exp * 1000);
+        await RefreshToken.updateOne(
+          { jti, userId: nuevoUsuario._id },
+          { $set: set, $setOnInsert: setOnInsert },
+          { upsert: true }
+        );
+      } catch { }
+    } catch { }
     res.setHeader("Cache-Control", "no-store");
     return res.status(201).json({
       mensaje: "Registro Exitoso",
@@ -217,10 +218,10 @@ const loginUsuario = async (req, res) => {
     }
 
     const correo = correoRaw.toLowerCase();
-    let usuario = await Usuario.findOne({ correo }).select("+contraseña +failedLoginCount +lockUntil");
+    let usuario = await Usuario.findOne({ correo }).select("+contraseña +failedLoginCount +lockUntil +twoFactorSecret twoFactorEnabled");
 
     if (!usuario) {
-      usuario = await Usuario.findOne({ nickname: correoRaw }).select("+contraseña +failedLoginCount +lockUntil");
+      usuario = await Usuario.findOne({ nickname: correoRaw }).select("+contraseña +failedLoginCount +lockUntil +twoFactorSecret twoFactorEnabled");
     }
     if (!usuario) {
       return res.status(404).json({ mensaje: "No existe una cuenta con este correo. Regístrate para continuar." });
@@ -254,25 +255,78 @@ const loginUsuario = async (req, res) => {
       await usuario.save({ validateModifiedOnly: true });
     }
 
+    // ✅ Normaliza el código 2FA desde body o headers
+    const code = String(
+      req.headers["x-2fa-code"] ||
+      req.headers["x-two-factor-code"] ||
+      req.body?.codigo2FA ||
+      req.body?.codigo2fa ||
+      req.body?.twoFactorCode ||
+      req.body?.twoFactorToken ||
+      req.body?.otp ||
+      req.body?.totp ||
+      req.body?.code ||
+      req.body?.["2fa"] ||
+      ""
+    ).replace(/\s+/g, "");
+
+    if (usuario.twoFactorEnabled) {
+      if (!code) {
+        return res.status(401).json({ requiere2FA: true, mensaje: "2FA requerido" });
+      }
+
+      // 🔎 Logs de depuración (remover en prod)
+      try {
+        const delta = speakeasy.totp.verifyDelta({
+          secret: usuario.twoFactorSecret,
+          encoding: "base32",
+          token: code,
+          window: 2, // ±60s
+        });
+        if (delta === null) {
+          const now = Math.floor(Date.now() / 1000);
+          const prev = speakeasy.totp({ secret: usuario.twoFactorSecret, encoding: "base32", time: now - 30 });
+          const curr = speakeasy.totp({ secret: usuario.twoFactorSecret, encoding: "base32", time: now });
+          const next = speakeasy.totp({ secret: usuario.twoFactorSecret, encoding: "base32", time: now + 30 });
+          console.log("[2FA DEBUG] uid:", String(usuario._id), "code:", code, "prev:", prev, "curr:", curr, "next:", next);
+        } else {
+          console.log("[2FA DEBUG] uid:", String(usuario._id), "code:", code, "delta:", delta.delta);
+        }
+      } catch (e) {
+        console.log("[2FA DEBUG] error:", e?.message || e);
+      }
+
+      const verificado = speakeasy.totp.verify({
+        secret: usuario.twoFactorSecret, // base32
+        encoding: "base32",
+        token: code,
+        window: 2, // ±60s
+      });
+
+      if (!verificado) {
+        return res.status(400).json({ requiere2FA: true, mensaje: "Código 2FA inválido o expirado" });
+      }
+    }
+
     const access = signAccess(usuario._id);
     const { refresh, jti } = await signRefresh(usuario._id);
     ensureSetRefreshCookie(req, res, refresh);
     try {
       const { ua, ip } = clientMeta(req);
       try {
-  const rtPayload = jwt.decode(refresh);
-  const incomingHash = require("../helpers/tokens").hashToken(refresh);
-  const set = { ua, ip, lastUsedAt: new Date(), tokenHash: incomingHash };
-  const setOnInsert = { createdAt: new Date() };
-  if (rtPayload && rtPayload.fam) setOnInsert.family = rtPayload.fam;
-  if (rtPayload && rtPayload.exp) setOnInsert.expiresAt = new Date(rtPayload.exp * 1000);
-  await RefreshToken.updateOne(
-    { jti, userId: usuario._id },
-    { $set: set, $setOnInsert: setOnInsert },
-    { upsert: true }
-  );
-} catch {}
-} catch {}
+        const rtPayload = jwt.decode(refresh);
+        const incomingHash = require("../helpers/tokens").hashToken(refresh);
+        const set = { ua, ip, lastUsedAt: new Date(), tokenHash: incomingHash };
+        const setOnInsert = { createdAt: new Date() };
+        if (rtPayload && rtPayload.fam) setOnInsert.family = rtPayload.fam;
+        if (rtPayload && rtPayload.exp) setOnInsert.expiresAt = new Date(rtPayload.exp * 1000);
+        await RefreshToken.updateOne(
+          { jti, userId: usuario._id },
+          { $set: set, $setOnInsert: setOnInsert },
+          { upsert: true }
+        );
+      } catch { }
+    } catch { }
     const actualizado = await Usuario.findById(usuario._id).lean();
     if (!actualizado) {
       return res.status(404).json({ mensaje: "Usuario no encontrado después de login" });
@@ -318,11 +372,11 @@ const refreshToken = async (req, res) => {
           revokedAt: null,
         });
         doc = await RefreshToken.findOne({ jti: payload.jti, userId: payload.uid });
-      } catch (_) {}
+      } catch (_) { }
     }
 
     if (!doc || doc.revokedAt || doc.tokenHash !== incomingHash) {
-      try { await revokeFamily(payload.fam); } catch (_) {}
+      try { await revokeFamily(payload.fam); } catch (_) { }
       clearRefreshCookieAll(req, res);
       return res.status(401).json({ mensaje: "Refresh reutilizado o inválido" });
     }
@@ -337,14 +391,14 @@ const refreshToken = async (req, res) => {
     try {
       const { ua, ip } = clientMeta(req);
       try {
-  const newIncomingHash = require("../helpers/tokens").hashToken(newRefresh);
-  await RefreshToken.updateOne(
-    { jti: newJti, userId: payload.uid },
-    { $set: { ua, ip, lastUsedAt: new Date(), tokenHash: newIncomingHash }, $setOnInsert: { createdAt: new Date() } },
-    { upsert: true }
-  );
-} catch {}
-} catch {}
+        const newIncomingHash = require("../helpers/tokens").hashToken(newRefresh);
+        await RefreshToken.updateOne(
+          { jti: newJti, userId: payload.uid },
+          { $set: { ua, ip, lastUsedAt: new Date(), tokenHash: newIncomingHash }, $setOnInsert: { createdAt: new Date() } },
+          { upsert: true }
+        );
+      } catch { }
+    } catch { }
     const expiresIn = getAccessTTLSeconds();
     res.setHeader("Cache-Control", "no-store");
     return res.json({ token, expiresIn, issuedAt: Date.now() });

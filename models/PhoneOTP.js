@@ -10,7 +10,7 @@ const PhoneOTPSchema = new mongoose.Schema(
     codeHash: { type: String, required: true }, // sha256(OTP)
     attempts: { type: Number, default: 0 },
     sentAt: { type: Date, default: Date.now },
-    expiresAt: { type: Date, required: true, index: true }, // TTL index
+    expiresAt: { type: Date, required: true }, // TTL index
   },
   { timestamps: true, versionKey: false }
 );

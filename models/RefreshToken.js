@@ -12,7 +12,7 @@ const RefreshTokenSchema = new Schema(
     jti: { type: String, required: true, index: true },
     family: { type: String, required: true, index: true },
     tokenHash: { type: String, required: true, unique: true },
-    expiresAt: { type: Date, required: true }, // TTL por índice
+    expiresAt: { type: Date, required: true }, // TTL por índice (sin index: true)
     revokedAt: { type: Date, default: null, index: true },
 
     // Metadata opcional para "Sesiones y dispositivos"

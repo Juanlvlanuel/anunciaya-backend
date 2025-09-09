@@ -14,6 +14,9 @@ const verificarToken = require("../middleware/verificarToken");
 const { rejectExtra } = require("../middleware/rejectExtra");
 const requireAdmin = require("../middleware/requireAdmin");
 
+const { postGoogleOAuthCode } = require("../controllers/googleController");
+
+
 // Controllers principales (usuario)
 let C;
 try { C = require("../controllers/usuarioController"); }
@@ -32,6 +35,9 @@ const deviceSessionsCtrl = require("../controllers/deviceSessionsController");
 let profileController;
 try { profileController = require("../controllers/profileController"); }
 catch { profileController = require("../controllers/profileController"); }
+
+const twoFactorController = require("../controllers/twoFactorController");
+
 
 // ======== Multer para /me/avatar ======== 
 const uploadDir = path.join(__dirname, "../uploads");
@@ -91,6 +97,7 @@ router.post("/auth/google",
 );
 router.get("/auth/google", C.iniciarGoogleOAuth);
 router.get("/auth/google/callback", C.googleCallbackHandler);
+router.post("/auth/google/callback", postGoogleOAuthCode);
 
 // Compatibilidad legacy
 router.post("/google",
@@ -126,7 +133,7 @@ try {
 // Perfil (autenticado)
 router.patch("/me",
   verificarToken,
-  rejectExtra(["nombre", "telefono", "ciudad", "direccion", "fotoPerfil", "nickname"]),
+  rejectExtra(["nombre", "telefono", "ciudad", "direccion", "fotoPerfil", "nickname", "twoFactorEnabled"]),
   profileController.actualizarPerfil
 );
 
@@ -219,6 +226,19 @@ router.post("/sessions/revoke-all", deviceSessionsCtrl.revokeAll);
 
 // ======== Seguridad: contraseña ========
 router.patch("/password", verificarToken, securityController.cambiarPassword);
+
+// ======== 2FA: Verificación en dos pasos con app (TOTP) ========
+// Endpoints usados por el FE:
+router.get("/2fa/setup", verificarToken, twoFactorController.generarSetup);        // Genera QR y secreto
+router.post("/2fa/verificar", verificarToken, twoFactorController.verificarCodigo); // Verifica código y activa
+router.post("/2fa/desactivar", verificarToken, twoFactorController.desactivar2FA);  // Desactiva 2FA
+
+// Compatibilidad con nombres/métodos anteriores (opcional):
+router.post("/2fa/setup", verificarToken, twoFactorController.generarSetup);
+router.post("/2fa/verify", verificarToken, twoFactorController.verificarCodigo);
+router.post("/2fa/disable", verificarToken, twoFactorController.desactivar2FA);
+
+
 
 // ======== Refresh ========
 router.post("/auth/refresh", touchSessionFromCookie, rejectExtra([]), require("../controllers/authController").refreshToken);

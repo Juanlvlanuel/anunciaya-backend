@@ -31,8 +31,8 @@ function decodeRefreshFromCookie(req) {
 async function emitForceLogout(io, { uid, fam, jti, reason }) {
   try {
     if (!io) return;
-    if (jti) io.to(`session:${jti}`).emit("force-logout", { scope: "session", jti, reason });
-    if (fam) io.to(`family:${fam}`).emit("force-logout", { scope: "family", fam, reason });
+    if (jti) io.to(`session:${jti}`).emit("session:forceLogout", { scope: "session", jti, reason });
+    if (fam) io.to(`family:${fam}`).emit("session:forceLogout", { scope: "family", fam, reason });
 
     // Fallback: si el cliente no unió family/session (p. ej., autenticado solo por access token),
     // emitimos solo a los sockets del usuario cuya socket.data.fam coincida.
@@ -41,7 +41,7 @@ async function emitForceLogout(io, { uid, fam, jti, reason }) {
         const sockets = await io.in(`user:${uid}`).fetchSockets();
         for (const s of sockets) {
           if (s?.data && s.data.fam === fam) {
-            s.emit("force-logout", { scope: "family", fam, reason, via: "fetchSockets" });
+            s.emit("session:forceLogout", { scope: "family", fam, reason, via: "fetchSockets" });
           }
         }
       } catch { }
@@ -53,7 +53,7 @@ async function emitForceLogout(io, { uid, fam, jti, reason }) {
         const all = await io.fetchSockets();
         for (const s of all) {
           if (s?.data && String(s.data.jti || "") === String(jti)) {
-            s.emit("force-logout", { scope: "session", jti, reason, via: "fetchSockets:all" });
+            s.emit("session:forceLogout", { scope: "session", jti, reason, via: "fetchSockets:all" });
           }
         }
       } catch { }
@@ -65,23 +65,31 @@ async function emitForceLogout(io, { uid, fam, jti, reason }) {
 function clearRefreshCookie(req, res) {
   try {
     const https = isHttps(req);
+    const isLocal = !https || req.hostname === "localhost" || req.hostname.startsWith("192.168.");
+
+    const sameSite = isLocal ? "lax" : "none";
+    const secure = !isLocal ? true : false;
+    const domain = isLocal ? undefined : process.env.COOKIE_DOMAIN;
+
     // limpiar en "/" y también por compatibilidad en "/api"
-    res.clearCookie((process.env.REFRESH_COOKIE_NAME || "rid"), {
+    res.clearCookie(process.env.REFRESH_COOKIE_NAME || "rid", {
       httpOnly: true,
-      sameSite: https ? "none" : "lax",
-      secure: https,
+      sameSite,
+      secure,
       path: "/",
-      domain: process.env.COOKIE_DOMAIN || undefined,
+      domain,
     });
-    res.clearCookie((process.env.REFRESH_COOKIE_NAME || "rid"), {
+
+    res.clearCookie(process.env.REFRESH_COOKIE_NAME || "rid", {
       httpOnly: true,
-      sameSite: https ? "none" : "lax",
-      secure: https,
+      sameSite,
+      secure,
       path: "/api",
-      domain: process.env.COOKIE_DOMAIN || undefined,
+      domain,
     });
   } catch { }
 }
+
 
 async function listSessions(req, res) {
   try {
@@ -196,8 +204,7 @@ async function revokeAll(req, res) {
     const io = getIO(req);
     if (io) {
       const sockets = await io.in(`user:${uid}`).fetchSockets();
-      console.log("[FORCE LOGOUT] Emitiendo a user:%s — sockets activos: %d", uid, sockets.length);
-      io.to(`user:${uid}`).emit("force-logout", { scope: "user", uid: String(uid), reason: "revoked-all" });
+      io.to(`user:${uid}`).emit("session:forceLogout", { scope: "user", uid: String(uid), reason: "revoked-all" });
       const seenFam = new Set();
       for (const d of docs) {
         await emitForceLogout(io, { uid: uid, fam: d && (d.family || d.fam), jti: d && d.jti, reason: "revoked-all" });

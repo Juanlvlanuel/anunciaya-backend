@@ -1,4 +1,4 @@
-// models/Usuario-1.js
+
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
@@ -48,14 +48,16 @@ const UsuarioSchema = new mongoose.Schema(
     isAdmin: { type: Boolean, default: undefined },
     scope: { type: [String], default: undefined },
     creado: { type: Date, default: undefined },
-
-    // ===== Verificación de correo =====
     emailVerificado: { type: Boolean, default: false },
-    // Invalida tokens emitidos antes de esta fecha (logout inmediato)
     logoutAt: { type: Date, default: null, index: true },
     emailVerificadoAt: { type: Date, default: null },
-    emailVerificationToken: { type: String, select: false, default: null }, // sha256
+    emailVerificationToken: { type: String, select: false, default: null },
     emailVerificationExpires: { type: Date, default: null, select: false },
+
+    // ===== Campos 2FA =====
+    twoFactorEnabled: { type: Boolean, default: false },
+    twoFactorSecret: { type: String, select: false, default: null },
+    twoFactorConfirmed: { type: Boolean, default: false },
   },
   {
     timestamps: true,
@@ -65,6 +67,7 @@ const UsuarioSchema = new mongoose.Schema(
         delete ret.contraseña;
         delete ret.emailVerificationToken;
         delete ret.emailVerificationExpires;
+        delete ret.twoFactorSecret;
         return ret;
       },
     },

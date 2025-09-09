@@ -33,7 +33,7 @@ const client = new OAuth2Client(CLIENT_ID);
 
 const STATE_COOKIE = process.env.STATE_COOKIE_NAME || "g_state";
 
-function clientMeta(req){
+function clientMeta(req) {
   const ua = String(req.headers["user-agent"] || "");
   const ip = (req.headers["x-forwarded-for"] || "").split(",")[0].trim() || req.ip || (req.connection && req.connection.remoteAddress) || null;
   return { ua, ip };
@@ -148,7 +148,7 @@ const autenticarConGoogle = async (req, res) => {
             { upsert: true }
           );
         }
-      } catch {}
+      } catch { }
       return res.status(200).json({
         token: access,
         usuario: {
@@ -214,7 +214,7 @@ const autenticarConGoogle = async (req, res) => {
           { upsert: true }
         );
       }
-    } catch {}
+    } catch { }
     return res.status(200).json({
       mensaje: "Registro y Login con Google Exitoso",
       token: access,
@@ -339,7 +339,7 @@ const googleCallbackHandler = async (req, res) => {
           { upsert: true }
         );
       }
-    } catch {}
+    } catch { }
     return res.redirect(
       `https://anunciaya-frontend.vercel.app/?googleToken=${access}&expiresIn=${expiresIn}&issuedAt=${issuedAt}`
     );
@@ -441,6 +441,104 @@ const unlinkGoogle = async (req, res) => {
     return res.status(500).json({ mensaje: "Error al desvincular Google" });
   }
 };
+const postGoogleOAuthCode = async (req, res) => {
+  try {
+    const code = req.body?.code;
+    if (!code) return res.status(400).json({ mensaje: "No se recibió el código de Google." });
+
+    const oauth2Client = new google.auth.OAuth2(CLIENT_ID, CLIENT_SECRET, REDIRECT_URI);
+
+    const r = await oauth2Client.getToken({ code, redirect_uri: "postmessage" });
+    const tokens = r?.tokens;
+    if (!tokens || !tokens.access_token) {
+      throw new Error("No se pudieron obtener los tokens de Google");
+    }
+    oauth2Client.setCredentials(tokens);
+
+    const oauth2 = google.oauth2({ version: "v2", auth: oauth2Client });
+    const userInfo = await oauth2.userinfo.get();
+    const correo = normEmail(userInfo?.data?.email);
+    const nombre = norm(userInfo?.data?.name);
+
+    if (!correo) return res.status(400).json({ mensaje: "Google no retornó un correo válido." });
+
+    const correoCI = new RegExp(`^${escapeRegExp(correo)}$`, "i");
+    let usuario = await Usuario.findOne({ correo: correoCI });
+
+    const expiresIn = parseExpiresToSeconds(process.env.JWT_EXPIRES_IN || "15m");
+    const issuedAt = Date.now();
+
+    if (!usuario) {
+      const tipo = req.body?.tipo;
+      const perfil = normalizePerfilToSchema(req.body?.perfil);
+
+      if (!tipo || !perfil) {
+        return res.status(400).json({ mensaje: "Faltan datos para registrar usuario." });
+      }
+
+      usuario = new Usuario({
+        correo,
+        nombre,
+        tipo,
+        perfil,
+        nickname: (correo.split("@")[0] || "user") + Date.now(),
+        autenticadoPorGoogle: true,
+      });
+      await usuario.save();
+    }
+
+    const access = signAccess(usuario._id);
+    const { refresh } = await signRefresh(usuario._id);
+
+    const isProd = process.env.NODE_ENV === "production";
+    res.cookie(process.env.REFRESH_COOKIE_NAME || "rid", refresh, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: isProd ? "none" : "lax",
+      path: "/",
+      maxAge: 30 * 24 * 60 * 60 * 1000,
+    });
+
+    // metadata jti
+    try {
+      const { ua, ip } = clientMeta(req);
+      const RefreshToken = require("../models/RefreshToken");
+      const rtPayload = require("jsonwebtoken").decode(refresh);
+      const incomingHash = require("../helpers/tokens").hashToken(refresh);
+      if (rtPayload?.jti) {
+        await RefreshToken.updateOne(
+          { jti: rtPayload.jti, userId: usuario._id },
+          {
+            $set: { ua, ip, lastUsedAt: new Date(), tokenHash: incomingHash },
+            $setOnInsert: {
+              createdAt: new Date(),
+              family: rtPayload.fam || "oauth",
+              expiresAt: rtPayload.exp ? new Date(rtPayload.exp * 1000) : undefined,
+            },
+          },
+          { upsert: true }
+        );
+      }
+    } catch { }
+
+    return res.status(200).json({
+      token: access,
+      usuario: {
+        _id: usuario._id,
+        nombre: usuario.nombre,
+        correo: usuario.correo,
+        tipo: usuario.tipo,
+        perfil: usuario.perfil,
+        autenticadoPorGoogle: true,
+      },
+      expiresIn,
+      issuedAt,
+    });
+  } catch (e) {
+    console.error("❌ postGoogleOAuthCode error:", e?.message || e);
+    return res.status(500).json({ mensaje: "Error al autenticar con Google (code)" });
+  }
+};
 
 module.exports = {
   autenticarConGoogle,
@@ -448,4 +546,5 @@ module.exports = {
   googleCallbackHandler,
   linkGoogle,
   unlinkGoogle,
+  postGoogleOAuthCode,
 };

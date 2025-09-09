@@ -44,17 +44,23 @@ const actualizarPerfil = async (req, res) => {
     const usuarioId = req.usuario?._id || req.usuarioId;
     if (!usuarioId) return res.status(401).json({ mensaje: "No autenticado" });
 
-    const allowed = ["nombre", "telefono", "fotoPerfil", "direccion", "ciudad", "nickname"];
+    const allowed = ["nombre", "telefono", "fotoPerfil", "direccion", "ciudad", "nickname", "twoFactorEnabled"];
     const updates = {};
     for (const k of allowed) {
       if (k in req.body) {
         if (k === "ciudad") {
           updates["direccion"] = req.body[k];
+        } else if (k === "twoFactorEnabled") {
+          // ✅ Forzar a booleano: true si llega "true" o true
+          updates[k] = req.body[k] === true || req.body[k] === "true";
         } else {
           updates[k] = req.body[k];
         }
       }
     }
+
+    console.log("BODY:", req.body);
+    console.log("UPDATES:", updates);
 
     if (!Object.keys(updates).length) {
       return res.status(400).json({ mensaje: "Nada para actualizar" });
