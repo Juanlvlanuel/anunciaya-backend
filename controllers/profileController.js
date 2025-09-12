@@ -59,9 +59,6 @@ const actualizarPerfil = async (req, res) => {
       }
     }
 
-    console.log("BODY:", req.body);
-    console.log("UPDATES:", updates);
-
     if (!Object.keys(updates).length) {
       return res.status(400).json({ mensaje: "Nada para actualizar" });
     }
@@ -132,4 +129,89 @@ const checkNickname = async (req, res) => {
   }
 };
 
-module.exports = { seleccionarPerfil, actualizarPerfil, actualizarNickname, checkNickname };
+/* ===================== ELIMINAR CUENTA =====================
+ * - Endpoint: DELETE /api/usuarios/me
+ * - Mueve la cuenta a CuentasEliminadas y luego la elimina de Usuarios
+ */
+const CuentaEliminada = require("../models/CuentaEliminada");
+
+const eliminarCuenta = async (req, res) => {
+  try {
+    const uid = req.usuario?._id || req.usuarioId;
+    if (!uid) return res.status(401).json({ mensaje: "No autenticado" });
+
+    const user = await Usuario.findById(uid).lean();
+    if (!user) return res.status(404).json({ mensaje: "Usuario no encontrado" });
+
+    await CuentaEliminada.create({
+      originalId: user._id,
+      datos: user,
+    });
+
+    await Usuario.findByIdAndDelete(uid);
+
+    try {
+      res.clearCookie("rid", {
+        httpOnly: true,
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+        secure: process.env.NODE_ENV === "production",
+        path: "/api",
+      });
+    } catch {}
+
+    return res.status(200).json({ ok: true, mensaje: "Cuenta eliminada" });
+  } catch (e) {
+    if (process.env.NODE_ENV !== "production") console.error("eliminarCuenta:", e);
+    return res.status(500).json({ mensaje: "Error al eliminar cuenta" });
+  }
+};
+
+
+/* ===================== RECUPERAR CUENTA =====================
+ * - Endpoint: POST /api/usuarios/recuperar
+ * - Busca en cuentas_eliminadas y restaura si no existe ya
+ */
+const { signAccess, signRefresh } = require("../helpers/tokens");
+const { setRefreshCookie } = require("./_usuario.shared");
+
+const recuperarCuenta = async (req, res) => {
+  try {
+    const correo = String(req.body?.correo || "").trim().toLowerCase();
+    if (!correo) return res.status(400).json({ mensaje: "Correo requerido" });
+
+    const existente = await Usuario.findOne({ correo }).lean();
+    if (existente) {
+      return res.status(409).json({ mensaje: "Ya existe una cuenta activa con este correo." });
+    }
+
+    const eliminada = await CuentaEliminada.findOne({ "datos.correo": correo });
+    if (!eliminada) {
+      return res.status(404).json({ mensaje: "No se encontró cuenta eliminada con ese correo." });
+    }
+
+    const nueva = await Usuario.create(eliminada.datos);
+    await CuentaEliminada.deleteOne({ _id: eliminada._id });
+
+    const token = signAccess(nueva._id);
+    const { refresh } = await signRefresh(nueva._id);
+    setRefreshCookie(req, res, refresh);
+
+    return res.json({
+      mensaje: "Cuenta recuperada",
+      token,
+      usuario: {
+        _id: nueva._id,
+        nombre: nueva.nombre,
+        correo: nueva.correo,
+        tipo: nueva.tipo,
+        perfil: nueva.perfil,
+      },
+    });
+  } catch (e) {
+    if (process.env.NODE_ENV !== "production") console.error("recuperarCuenta:", e);
+    return res.status(500).json({ mensaje: "Error al recuperar cuenta" });
+  }
+};
+
+
+module.exports = { seleccionarPerfil, actualizarPerfil, actualizarNickname, checkNickname,eliminarCuenta,recuperarCuenta };

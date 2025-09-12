@@ -218,10 +218,12 @@ const loginUsuario = async (req, res) => {
     }
 
     const correo = correoRaw.toLowerCase();
-    let usuario = await Usuario.findOne({ correo }).select("+contraseña +failedLoginCount +lockUntil +twoFactorSecret twoFactorEnabled");
+    let usuario = await Usuario.findOne({ correo }).select("+contraseña +failedLoginCount +lockUntil +twoFactorSecret twoFactorEnabled +emailVerificado");
+
 
     if (!usuario) {
-      usuario = await Usuario.findOne({ nickname: correoRaw }).select("+contraseña +failedLoginCount +lockUntil +twoFactorSecret twoFactorEnabled");
+      usuario = await Usuario.findOne({ nickname: correoRaw }).select("+contraseña +failedLoginCount +lockUntil +twoFactorSecret twoFactorEnabled +emailVerificado");
+
     }
     if (!usuario) {
       return res.status(404).json({ mensaje: "No existe una cuenta con este correo. Regístrate para continuar." });
@@ -255,6 +257,16 @@ const loginUsuario = async (req, res) => {
       await usuario.save({ validateModifiedOnly: true });
     }
 
+    
+    // 🚫 Verificación de correo obligatoria
+    if (usuario.emailVerificado !== true) {
+      return res.status(403).json({
+        mensaje: "Tu cuenta no está verificada. Revisa tu correo para activarla.",
+        error: { code: "EMAIL_NOT_VERIFIED" }
+      });
+    }
+
+
     // ✅ Normaliza el código 2FA desde body o headers
     const code = String(
       req.headers["x-2fa-code"] ||
@@ -273,27 +285,6 @@ const loginUsuario = async (req, res) => {
     if (usuario.twoFactorEnabled) {
       if (!code) {
         return res.status(401).json({ requiere2FA: true, mensaje: "2FA requerido" });
-      }
-
-      // 🔎 Logs de depuración (remover en prod)
-      try {
-        const delta = speakeasy.totp.verifyDelta({
-          secret: usuario.twoFactorSecret,
-          encoding: "base32",
-          token: code,
-          window: 2, // ±60s
-        });
-        if (delta === null) {
-          const now = Math.floor(Date.now() / 1000);
-          const prev = speakeasy.totp({ secret: usuario.twoFactorSecret, encoding: "base32", time: now - 30 });
-          const curr = speakeasy.totp({ secret: usuario.twoFactorSecret, encoding: "base32", time: now });
-          const next = speakeasy.totp({ secret: usuario.twoFactorSecret, encoding: "base32", time: now + 30 });
-          console.log("[2FA DEBUG] uid:", String(usuario._id), "code:", code, "prev:", prev, "curr:", curr, "next:", next);
-        } else {
-          console.log("[2FA DEBUG] uid:", String(usuario._id), "code:", code, "delta:", delta.delta);
-        }
-      } catch (e) {
-        console.log("[2FA DEBUG] error:", e?.message || e);
       }
 
       const verificado = speakeasy.totp.verify({

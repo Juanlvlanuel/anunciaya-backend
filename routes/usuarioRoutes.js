@@ -14,7 +14,8 @@ const verificarToken = require("../middleware/verificarToken");
 const { rejectExtra } = require("../middleware/rejectExtra");
 const requireAdmin = require("../middleware/requireAdmin");
 
-const { postGoogleOAuthCode } = require("../controllers/googleController");
+const { autenticarConGoogle, postGoogleOAuthCode } = require("../controllers/googleController");
+
 
 
 // Controllers principales (usuario)
@@ -35,6 +36,11 @@ const deviceSessionsCtrl = require("../controllers/deviceSessionsController");
 let profileController;
 try { profileController = require("../controllers/profileController"); }
 catch { profileController = require("../controllers/profileController"); }
+
+let recuperacionController;
+try { recuperacionController = require("../controllers/recuperacionController"); }
+catch { recuperacionController = require("../controllers/recuperacionController"); }
+
 
 const twoFactorController = require("../controllers/twoFactorController");
 
@@ -79,10 +85,15 @@ router.post("/registro",
   C.registrarUsuario
 );
 
+router.post("/recuperar/enviar-codigo", recuperacionController.enviarCodigoRecuperacion);
+router.post("/recuperar/verificar-codigo", recuperacionController.verificarCodigoRecuperacion);
+
 router.post("/login",
   rejectExtra(["email", "password", "correo", "contraseña", "login"]),
   C.loginUsuario
 );
+
+router.post("/recuperar", profileController.recuperarCuenta);
 
 router.post("/seleccionar-perfil",
   verificarToken,
@@ -92,16 +103,18 @@ router.post("/seleccionar-perfil",
 
 // Google OAuth (One Tap + OAuth clásico)
 router.post("/auth/google",
-  rejectExtra(["credential", "nonce", "tipo", "perfil"]),
-  C.autenticarConGoogle
+rejectExtra(["credential", "nonce", "tipo", "perfil", "modo"]),
+  autenticarConGoogle
 );
+
 router.get("/auth/google", C.iniciarGoogleOAuth);
 router.get("/auth/google/callback", C.googleCallbackHandler);
 router.post("/auth/google/callback", postGoogleOAuthCode);
+router.post("/auth/google/code", postGoogleOAuthCode);
 
 // Compatibilidad legacy
 router.post("/google",
-  rejectExtra(["credential", "nonce", "tipo", "perfil"]),
+ rejectExtra(["credential", "nonce", "tipo", "perfil", "modo"]),
   C.autenticarConGoogle
 );
 router.get("/google", C.iniciarGoogleOAuth);
@@ -136,6 +149,8 @@ router.patch("/me",
   rejectExtra(["nombre", "telefono", "ciudad", "direccion", "fotoPerfil", "nickname", "twoFactorEnabled"]),
   profileController.actualizarPerfil
 );
+
+router.delete("/me", verificarToken, profileController.eliminarCuenta);
 
 // === NEW: Verificar unicidad de nickname ===
 router.get("/nickname/check", profileController.checkNickname);
@@ -227,18 +242,24 @@ router.post("/sessions/revoke-all", deviceSessionsCtrl.revokeAll);
 // ======== Seguridad: contraseña ========
 router.patch("/password", verificarToken, securityController.cambiarPassword);
 
-// ======== 2FA: Verificación en dos pasos con app (TOTP) ========
-// Endpoints usados por el FE:
-router.get("/2fa/setup", verificarToken, twoFactorController.generarSetup);        // Genera QR y secreto
-router.post("/2fa/verificar", verificarToken, twoFactorController.verificarCodigo); // Verifica código y activa
-router.post("/2fa/desactivar", verificarToken, twoFactorController.desactivar2FA);  // Desactiva 2FA
+// ======== 2FA: Verificación con app ========
+router.get("/2fa/setup", verificarToken, twoFactorController.generarSetup);
+router.post("/2fa/verificar", verificarToken, twoFactorController.verificarCodigo);
+router.post("/2fa/desactivar", verificarToken, twoFactorController.desactivar2FA);
 
-// Compatibilidad con nombres/métodos anteriores (opcional):
+// ======== 2FA: Backup codes ========
+router.post("/2fa/backup/generate", verificarToken, twoFactorController.generateBackupCodes);
+router.post("/2fa/backup/regenerate", verificarToken, twoFactorController.regenerateBackupCodes);
+router.post("/2fa/backup/use", twoFactorController.useBackupCode);
+
+// ======== 2FA RESET (sin sesión) ========
+router.post("/2fa/reset/start", twoFactorController.resetStart);
+router.post("/2fa/reset/verify", twoFactorController.resetVerify);
+
+// Compatibilidad legacy
 router.post("/2fa/setup", verificarToken, twoFactorController.generarSetup);
 router.post("/2fa/verify", verificarToken, twoFactorController.verificarCodigo);
 router.post("/2fa/disable", verificarToken, twoFactorController.desactivar2FA);
-
-
 
 // ======== Refresh ========
 router.post("/auth/refresh", touchSessionFromCookie, rejectExtra([]), require("../controllers/authController").refreshToken);
@@ -318,8 +339,8 @@ router.post("/reenviar-verificacion",
   },
   emailController.requestVerificationEmail
 );
-router.get("/verificar-email", emailController.verifyEmail);
-router.get("/verificar-email/:token", emailController.verifyEmail);
+
+router.post("/verificar-codigo", emailController.verificarCodigo6dig);
 
 // ==== Teléfono (verificación OTP) ====
 try {

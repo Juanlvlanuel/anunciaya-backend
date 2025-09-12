@@ -2,6 +2,9 @@
 const crypto = require("crypto");
 const Usuario = require("../models/Usuario");
 const { sendMail } = require("../utils/mailer");
+const { signAccess, signRefresh } = require("../helpers/tokens");
+const { setRefreshCookie } = require("./_usuario.shared");
+
 
 function hashToken(raw) {
   return crypto.createHash("sha256").update(String(raw)).digest("hex");
@@ -25,99 +28,43 @@ async function requestVerificationEmail(req, res) {
     const correo = (body.correo || body.email || "").toString().trim().toLowerCase();
 
     let user = null;
-    if (userId) {
-      try { user = await Usuario.findById(userId).lean(); } catch {}
-    }
-    if (!user && correo) {
-      user = await Usuario.findOne({ correo }).lean();
-    }
-    if (!user && req.user && req.user.uid) {
-      user = await Usuario.findById(req.user.uid).lean();
-    }
-    if (!user) {
-      return res.status(404).json({ mensaje: "Usuario no encontrado" });
-    }
+    if (userId) user = await Usuario.findById(userId);
+    if (!user && correo) user = await Usuario.findOne({ correo });
+    if (!user && req.user && req.user.uid) user = await Usuario.findById(req.user.uid);
+    if (!user) return res.status(404).json({ mensaje: "Usuario no encontrado" });
+
     if (user.emailVerificado) {
       return res.json({ mensaje: "Correo ya verificado" });
     }
 
-    const raw = crypto.randomBytes(32).toString("hex");
-    const hashed = hashToken(raw);
-    const expMs = parseInt(process.env.EMAIL_VERIFY_TTL_MS || String(24 * 60 * 60 * 1000), 10);
+    const codigo = Math.floor(100000 + Math.random() * 900000).toString(); // 6 dígitos
+    const expira = new Date(Date.now() + 15 * 60 * 1000); // 15 minutos
 
-    await Usuario.updateOne(
-      { _id: user._id },
-      {
-        $set: {
-          emailVerificationToken: hashed,
-          emailVerificationExpires: new Date(Date.now() + (isFinite(expMs) ? expMs : 86400000)),
-          emailVerificado: false,
-        },
-      }
-    );
-
-    const verifyUrl = `${frontendBase()}/verificar-email?token=${encodeURIComponent(raw)}`;
+    user.codigoVerificacionEmail = codigo;
+    user.codigoVerificacionExpira = expira;
+    await user.save({ validateModifiedOnly: true });
 
     const from = process.env.EMAIL_FROM || "no-reply@anunciaya.com";
-    const subject = "Verifica tu correo en AnunciaYA";
-    const text = `Hola ${user.nombre || ""}:\n\nConfirma tu correo haciendo clic en este enlace:\n${verifyUrl}\n\nSi no creaste una cuenta, ignora este mensaje.`;
+    const subject = "Tu código de verificación en AnunciaYA";
     const html = `
       <div style="font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; line-height:1.6">
-        <h2>Confirma tu correo</h2>
+        <h2>Código de verificación</h2>
         <p>Hola ${user.nombre || ""},</p>
-        <p>Para activar tu cuenta, verifica tu correo haciendo clic en el siguiente botón:</p>
-        <p><a href="${verifyUrl}" style="display:inline-block;padding:12px 18px;border-radius:12px;background:#2563eb;color:#fff;text-decoration:none">Verificar correo</a></p>
-        <p>O copia y pega este enlace en tu navegador:</p>
-        <p><a href="${verifyUrl}">${verifyUrl}</a></p>
-        <p style="color:#64748b;font-size:12px">Este enlace expira en 24 horas.</p>
+        <p>Tu código para verificar tu correo es:</p>
+        <p style="font-size: 24px; font-weight: bold;">${codigo}</p>
+        <p>Este código expirará en 15 minutos.</p>
+        <p>Si no creaste una cuenta, puedes ignorar este mensaje.</p>
       </div>`;
 
-    try {
-      await sendMail({ to: user.correo, from, subject, text, html });
-    } catch (e) {
-      return res.status(500).json({
-        mensaje: "No se pudo enviar el correo de verificación",
-        error: { code: e.code || null, message: e.message || null }
-      });
-    }
+    await sendMail({ to: user.correo, from, subject, html });
 
-    return res.json({ mensaje: "Correo de verificación enviado" });
+    return res.json({ mensaje: "Código de verificación enviado" });
   } catch (e) {
     return res.status(500).json({ mensaje: "Error al reenviar verificación", detalle: e.message });
   }
 }
 
-/**
- * GET /api/usuarios/verificar-email?token=...
- */
-async function verifyEmail(req, res) {
-  try {
-    const raw = (req.query && req.query.token) || (req.params && req.params.token) || "";
-    if (!raw || String(raw).length < 20) {
-      return res.status(400).json({ mensaje: "Token faltante o inválido" });
-    }
-    const hashed = hashToken(raw);
-    const now = new Date();
 
-    const user = await Usuario.findOne({
-      emailVerificationToken: hashed,
-      emailVerificationExpires: { $gt: now },
-    });
-    if (!user) {
-      return res.status(400).json({ mensaje: "Token inválido o expirado" });
-    }
-
-    user.emailVerificado = true;
-    user.emailVerificadoAt = new Date();
-    user.emailVerificationToken = null;
-    user.emailVerificationExpires = null;
-    await user.save({ validateModifiedOnly: true });
-
-    return res.json({ ok: true, mensaje: "Correo verificado", usuario: user });
-  } catch (e) {
-    return res.status(500).json({ mensaje: "Error verificando correo", detalle: e.message });
-  }
-}
 
 /**
  * GET /api/usuarios/auth/test-smtp?to=correo
@@ -138,4 +85,51 @@ async function testSMTP(req, res) {
   }
 }
 
-module.exports = { requestVerificationEmail, verifyEmail, testSMTP };
+async function verificarCodigo6dig(req, res) {
+  try {
+    const { correo, codigo } = req.body || {};
+    const email = (correo || "").toString().trim().toLowerCase();
+    const cod = (codigo || "").toString().trim();
+
+    if (!email || !cod || cod.length !== 6) {
+      return res.status(400).json({ mensaje: "Correo o código inválido" });
+    }
+
+    const user = await Usuario.findOne({ correo: email }).select("+codigoVerificacionEmail +codigoVerificacionExpira");
+    if (!user) return res.status(404).json({ mensaje: "Usuario no encontrado" });
+
+    const now = new Date();
+    if (!user.codigoVerificacionEmail || !user.codigoVerificacionExpira || user.codigoVerificacionExpira < now) {
+      return res.status(400).json({ mensaje: "Código expirado o inválido" });
+    }
+
+    if (user.codigoVerificacionEmail !== cod) {
+      return res.status(400).json({ mensaje: "Código incorrecto" });
+    }
+
+    user.emailVerificado = true;
+    user.emailVerificadoAt = new Date();
+    user.codigoVerificacionEmail = null;
+    user.codigoVerificacionExpira = null;
+
+    // ✅ Guardar cambios en Mongo
+    await user.save({ validateModifiedOnly: true });
+
+    const token = signAccess(user._id);
+    const { refresh } = await signRefresh(user._id);
+    setRefreshCookie(req, res, refresh);
+
+    return res.json({
+      mensaje: "Correo verificado con éxito",
+      ok: true,
+      token,
+      usuario: user,
+    });
+
+  } catch (e) {
+    return res.status(500).json({ mensaje: "Error al verificar código", detalle: e.message });
+  }
+}
+
+
+module.exports = { requestVerificationEmail, verificarCodigo6dig, testSMTP };
