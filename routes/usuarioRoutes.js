@@ -12,7 +12,7 @@ const { signAccess, signRefresh, revokeFamily } = require("../helpers/tokens");
 
 const verificarToken = require("../middleware/verificarToken");
 const { rejectExtra } = require("../middleware/rejectExtra");
-const requireAdmin = require("../middleware/requireAdmin");
+const { requireAdmin } = require("../middleware/requireAdmin");
 
 const { autenticarConGoogle, postGoogleOAuthCode } = require("../controllers/googleController");
 
@@ -251,6 +251,7 @@ router.post("/2fa/desactivar", verificarToken, twoFactorController.desactivar2FA
 router.post("/2fa/backup/generate", verificarToken, twoFactorController.generateBackupCodes);
 router.post("/2fa/backup/regenerate", verificarToken, twoFactorController.regenerateBackupCodes);
 router.post("/2fa/backup/use", twoFactorController.useBackupCode);
+router.post("/2fa/backup/use-and-login", twoFactorController.useBackupCodeAndLogin);
 
 // ======== 2FA RESET (sin sesión) ========
 router.post("/2fa/reset/start", twoFactorController.resetStart);

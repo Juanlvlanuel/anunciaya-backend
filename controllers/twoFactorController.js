@@ -61,12 +61,22 @@ function randomCode() {
   // 8 alfanuméricos con guion (ej. AB7K-9Q3M)
   const dict = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"; // sin 0,1,IO
   const mk = (n) => Array.from({ length: n }, () => dict[Math.floor(Math.random() * dict.length)]).join("");
-  return `${mk(4)}-${mk(4)}`;
+
+  // Generar con timestamp para mayor unicidad
+  const timestamp = Date.now().toString(36).slice(-2).toUpperCase();
+  return `${mk(2)}${timestamp}-${mk(4)}`;
 }
 
 async function hashCodes(codes) {
   const out = [];
+  const seen = new Set();
+
   for (const c of codes) {
+    if (seen.has(c)) {
+      console.warn("Código duplicado detectado:", c);
+      continue; // Saltar duplicados
+    }
+    seen.add(c);
     const hash = await bcrypt.hash(c, 10);
     out.push({ hash, usedAt: null });
   }
@@ -139,10 +149,6 @@ exports.verificarCodigo = async (req, res) => {
       window: 1,
     });
     if (!ok) return res.status(401).json({ mensaje: "Código inválido" });
-
-    console.log("✅ Verificado con éxito:", uid);
-
-    const id = typeof uid === "string" ? Types.ObjectId(uid) : uid;
 
     const result = await Usuario.updateOne(
       { _id: uid },
@@ -405,7 +411,7 @@ exports.useBackupCode = async (req, res) => {
       return res.status(429).json({ mensaje: `Demasiados intentos. Intenta en ${Math.ceil(ms / 1000)}s` });
     }
 
-    const user = await Usuario.findOne({ correo: email }).select("+contraseña");
+    const user = await Usuario.findOne({ correo: email }).select("+contraseña +twoFactorSecret");
     if (!user) return res.status(404).json({ mensaje: "No existe una cuenta con este correo" });
 
     const ok = await (typeof user.comprobarPassword === "function" ? user.comprobarPassword(password) : Promise.resolve(false));
@@ -435,5 +441,107 @@ exports.useBackupCode = async (req, res) => {
     return res.json({ mensaje: "Código aceptado. 2FA desactivado. Inicia sesión y reconfigura tu 2FA." });
   } catch (e) {
     return res.status(500).json({ mensaje: "Error usando código de respaldo" });
+  }
+};
+
+/**
+ * POST /api/usuarios/2fa/backup/use-and-login
+ * - SIN sesión
+ * - Body: { correo, contraseña, backupCode }
+ * - Verifica credenciales + consume backup code válido
+ * - MANTIENE 2FA ACTIVO (solo marca el código como usado)
+ * - Devuelve token para login inmediato
+ */
+// Reemplazar el método useBackupCodeAndLogin en twoFactorController.js
+
+exports.useBackupCodeAndLogin = async (req, res) => {
+  try {
+    const email = String(req.body?.email || req.body?.correo || "").trim().toLowerCase();
+    const password = String(req.body?.password || req.body?.contraseña || "").trim();
+    const code = String(req.body?.code || req.body?.backupCode || "").trim().toUpperCase();
+
+    if (!email || !password || !code) {
+      return res.status(400).json({ mensaje: "Correo, contraseña y código requeridos" });
+    }
+
+    // Rate limit
+    const keyUse = `backup:${email}`;
+    const recUse = touchAttempt(keyUse, 5 * 60 * 1000);
+    if (recUse.count > 5) {
+      const ms = remainingMs(keyUse);
+      return res.status(429).json({ mensaje: `Demasiados intentos. Intenta en ${Math.ceil(ms / 1000)}s` });
+    }
+
+    const user = await Usuario.findOne({ correo: email }).select("+contraseña +twoFactorSecret");
+    if (!user) return res.status(404).json({ mensaje: "No existe una cuenta con este correo" });
+
+    // Verificar contraseña
+    const ok = await (typeof user.comprobarPassword === "function" ? user.comprobarPassword(password) : Promise.resolve(false));
+    if (!ok) return res.status(401).json({ mensaje: "Credenciales inválidas" });
+
+    // Verificar que tenga 2FA activo
+    if (!user.twoFactorEnabled) {
+      return res.status(400).json({ mensaje: "Tu cuenta no tiene 2FA activo" });
+    }
+
+    // Buscar backup code válido
+    const list = Array.isArray(user.backupCodes) ? user.backupCodes : [];
+
+    let idx = -1;
+    for (let i = 0; i < list.length; i++) {
+      const item = list[i];
+      if (item && !item.usedAt) {
+        const match = await bcrypt.compare(code, item.hash);
+        if (match) {
+          idx = i;
+          break;
+        }
+      }
+    }
+
+    if (idx === -1) {
+      return res.status(400).json({ mensaje: "Código inválido o ya usado" });
+    }
+
+    // GENERAR TOKEN PRIMERO
+    const generarJWT = require("../helpers/generarJWT");
+    const token = await generarJWT(user._id);
+
+    // CREAR REFRESH TOKEN
+    try {
+      const { setRefreshCookie } = require("../helpers/tokens");
+      await setRefreshCookie(res, user._id);
+    } catch (e) {
+    }
+
+    // SOLO CONSUMIR CÓDIGO (sin tocar flags de 2FA)
+    user.backupCodes[idx].usedAt = new Date();
+    await user.save();
+
+    // ===== VERIFICACIÓN POST-SAVE =====
+    const userAfterSave = await Usuario.findById(user._id).select('twoFactorEnabled twoFactorConfirmed');
+
+    clearAttempts(keyUse);
+
+    const responseData = {
+      mensaje: "Código de respaldo usado correctamente",
+      token,
+      usuario: {
+        _id: user._id,
+        correo: user.correo,
+        nickname: user.nickname,
+        tipo: user.tipo,
+        perfil: user.perfil,
+        verificado: user.verificado,
+        twoFactorEnabled: userAfterSave.twoFactorEnabled // Usar valor fresh de BD
+      }
+    };
+
+
+    return res.json(responseData);
+
+  } catch (e) {
+    console.error("❌ Error en useBackupCodeAndLogin:", e);
+    return res.status(500).json({ mensaje: "Error procesando código de respaldo" });
   }
 };

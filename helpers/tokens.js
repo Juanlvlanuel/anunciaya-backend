@@ -55,6 +55,31 @@ function parseExpiresToSeconds(expStr) {
   return n * (map[unit] || 60);
 }
 
+// === Helper para detectar HTTPS ===
+function isHttps(req) {
+  if (req && req.secure) return true;
+  const xfp = String(req?.headers?.["x-forwarded-proto"] || "").toLowerCase();
+  return xfp === "https";
+}
+
+// === Helper para opciones de cookie ===
+function getRefreshCookieOpts(req) {
+  const https = isHttps(req);
+  const secure = https ? true : false;
+  const sameSite = https ? "none" : "lax";
+  const cfg = (process.env.COOKIE_DOMAIN || "").trim().replace(/^\./, "");
+  const host = String(req?.headers?.host || "").split(":")[0];
+  const cookieDomain = (cfg && host && (host === cfg || host.endsWith("." + cfg))) ? cfg : undefined;
+  return {
+    httpOnly: true,
+    sameSite,
+    secure,
+    path: "/",
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 días
+    domain: cookieDomain,
+  };
+}
+
 const signAccess = (uid) => {
   assertEnvSecrets();
   return jwt.sign({ uid }, process.env.JWT_SECRET, {
@@ -106,6 +131,41 @@ const revokeFamily = async (family) => {
   return { n: 0 };
 };
 
+// === Nueva función setRefreshCookie ===
+const setRefreshCookie = async (res, userId, req = null) => {
+  try {
+    const { refresh } = await signRefresh(userId);
+    const REFRESH_COOKIE_NAME = process.env.REFRESH_COOKIE_NAME || "rid";
+    
+    let cookieOpts;
+    if (req) {
+      cookieOpts = getRefreshCookieOpts(req);
+    } else {
+      // Fallback si no hay req
+      cookieOpts = {
+        httpOnly: true,
+        secure: process.env.NODE_ENV === "production",
+        sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+        maxAge: 30 * 24 * 60 * 60 * 1000,
+        path: "/"
+      };
+    }
+    
+    res.cookie(REFRESH_COOKIE_NAME, refresh, cookieOpts);
+    return refresh;
+  } catch (e) {
+    console.error("Error setting refresh cookie:", e);
+    throw e;
+  }
+};
+
 const getAccessTTLSeconds = () => parseExpiresToSeconds(process.env.JWT_EXPIRES_IN || "15m");
 
-module.exports = { signAccess, signRefresh, revokeFamily, hashToken, getAccessTTLSeconds };
+module.exports = { 
+  signAccess, 
+  signRefresh, 
+  revokeFamily, 
+  hashToken, 
+  getAccessTTLSeconds,
+  setRefreshCookie // ✨ Nueva función exportada
+};

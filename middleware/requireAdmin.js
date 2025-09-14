@@ -1,6 +1,9 @@
-// middleware/requireAdmin-1.js
+// ===== requireAdmin.js - ARCHIVO COMPLETO CORREGIDO =====
+// middleware/requireAdmin.js - CORREGIDO: Versión que funciona
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+const Admin = require("../models/Admin");
+
 function safeEqual(a, b) {
   if (!a || !b) return false;
   const ab = Buffer.from(String(a));
@@ -10,46 +13,57 @@ function safeEqual(a, b) {
 }
 
 /**
- * Autoriza llamadas de ADMIN de dos formas:
- * 1) Header: x-admin-key === process.env.ADMIN_API_KEY
- * 2) Authorization: Bearer <JWT> con { role: 'admin' } o { isAdmin: true } o scope incluye 'admin'
+ * Middleware base para verificar autenticación admin
  */
-module.exports = function requireAdmin(req, res, next) {
-  
-  // Requiere JWT válido (verificarToken debe correr antes). Sin token => 401
-  if (!req || !req.usuario) {
-    return res.status(401).json({ error: { code: "UNAUTHORIZED", message: "No token. Acceso denegado" } });
-  }
-  // Si el token ya es admin, permitir
-  if (req.admin === true) { return next(); }
-// ---- API KEY (x-admin-key) ----
-  if (req.admin === true) { return next(); }
-  const envKey = (process.env.ADMIN_API_KEY || "").trim();
-  const headerKey =
-    (req.headers["x-admin-key"] ||
+const requireAdmin = async (req, res, next) => {
+  try {
+    // CORREGIDO: Eliminar verificación de req.usuario - los admins son independientes
+    
+    // Si ya es admin validado, continuar
+    if (req.admin === true) { 
+      return next(); 
+    }
+
+    // Verificar API Key (para super admins)
+    const envKey = (process.env.ADMIN_API_KEY || "").trim();
+    const headerKey = (
+      req.headers["x-admin-key"] ||
       req.headers["X-Admin-Key"] ||
       req.get?.("x-admin-key") ||
-      "").toString().trim();
+      ""
+    ).toString().trim();
 
-  if (envKey && headerKey && headerKey === envKey) {
-    req.admin = { method: "api-key" };
-    return next();
-  }
+    if (envKey && headerKey && safeEqual(headerKey, envKey)) {
+      // API Key otorga privilegios de super admin
+      req.admin = { 
+        method: "api-key", 
+        nivel: "super",
+        permisos: ["*"], // Todos los permisos
+        tienePermiso: () => true,
+        puedeGestionar: () => true
+      };
+      return next();
+    }
 
-  // ---- JWT (Authorization: Bearer <token>) ----
-  let token = req.headers["authorization"] || "";
-  if (typeof token === "string") token = token.trim();
-  if (token.toLowerCase().startsWith("bearer ")) token = token.slice(7).trim();
-  if (!token) {
-    return res.status(401).json({ error: { code: "UNAUTHORIZED", message: "Admin no autorizado" } });
-  }
+    // Verificar JWT Token
+    let token = req.headers["authorization"] || "";
+    if (typeof token === "string") token = token.trim();
+    if (token.toLowerCase().startsWith("bearer ")) token = token.slice(7).trim();
+    
+    if (!token) {
+      return res.status(401).json({ 
+        error: { 
+          code: "UNAUTHORIZED", 
+          message: "Token admin requerido" 
+        } 
+      });
+    }
 
-  try {
+    // Verificar token JWT
     const options = {};
     if (process.env.JWT_ISS) options.issuer = process.env.JWT_ISS;
     if (process.env.JWT_AUD) options.audience = process.env.JWT_AUD;
 
-    // Permite verificación con JWT_SECRET y ACCESS_JWT_SECRET
     let decoded = null;
     const secrets = [
       process.env.JWT_SECRET,
@@ -63,23 +77,208 @@ module.exports = function requireAdmin(req, res, next) {
       } catch {}
     }
 
-    if (!decoded) return res.status(401).json({ error: { code: "UNAUTHORIZED", message: "Token admin inválido" } });
+    if (!decoded) {
+      return res.status(401).json({ 
+        error: { 
+          code: "UNAUTHORIZED", 
+          message: "Token admin inválido" 
+        } 
+      });
+    }
 
-    const hasAdmin =
+    // Verificar si tiene rol admin en el token
+    const hasAdminInToken = 
       decoded.role === "admin" ||
       decoded.isAdmin === true ||
       (Array.isArray(decoded.scope) && decoded.scope.includes("admin"));
 
-    if (!hasAdmin) return res.status(403).json({ error: { code: "FORBIDDEN", message: "Se requiere rol admin" } });
+    if (!hasAdminInToken) {
+      return res.status(403).json({ 
+        error: { 
+          code: "FORBIDDEN", 
+          message: "Se requiere rol admin" 
+        } 
+      });
+    }
 
+    // Buscar admin completo en BD para obtener nivel y permisos
+    const adminId = decoded.uid || decoded.id || decoded._id || decoded.sub;
+    const admin = await Admin.findById(adminId).select("usuario nivel permisos activo ultimoAcceso");
+
+    if (!admin || !admin.activo) {
+      return res.status(403).json({ 
+        error: { 
+          code: "FORBIDDEN", 
+          message: "Cuenta admin inactiva o no encontrada" 
+        } 
+      });
+    }
+
+    // Actualizar último acceso
+    admin.ultimoAcceso = new Date();
+    await admin.save();
+
+    // Establecer información admin en request
     req.admin = {
       method: "jwt",
-      sub: decoded.sub,
-      uid: decoded.uid || decoded.id || decoded._id,
-      role: decoded.role || (decoded.isAdmin ? "admin" : undefined),
+      id: admin._id,
+      usuario: admin.usuario,
+      nivel: admin.nivel,
+      permisos: admin.permisos,
+      tienePermiso: (permiso) => {
+        return admin.activo && admin.permisos.includes(permiso);
+      },
+      puedeGestionar: (recurso) => {
+        const acciones = ["read", "create", "update", "delete"];
+        return acciones.some(accion => 
+          admin.activo && admin.permisos.includes(`${recurso}:${accion}`)
+        );
+      }
     };
+
     return next();
-  } catch (_e) {
-    return res.status(401).json({ error: { code: "UNAUTHORIZED", message: "Token admin inválido" } });
+
+  } catch (error) {
+    return res.status(500).json({ 
+      error: { 
+        code: "INTERNAL_ERROR", 
+        message: "Error de verificación admin" 
+      } 
+    });
   }
+};
+
+/**
+ * CORREGIDO: Middleware para requerir nivel específico de admin
+ */
+const requireAdminLevel = (nivelRequerido) => {
+  const jerarquia = {
+    "moderador": 1,
+    "general": 2,
+    "super": 3
+  };
+
+  return (req, res, next) => {
+    // Primero ejecutar requireAdmin
+    requireAdmin(req, res, (err) => {
+      if (err) {
+        return; // requireAdmin ya envió la respuesta
+      }
+
+      if (!req.admin) {
+        return res.status(403).json({ 
+          error: { 
+            code: "FORBIDDEN", 
+            message: "Admin requerido" 
+          } 
+        });
+      }
+
+      // API Key tiene acceso total
+      if (req.admin.method === "api-key") {
+        return next();
+      }
+
+      const nivelActual = req.admin.nivel;
+      const nivelActualNum = jerarquia[nivelActual] || 0;
+      const nivelRequeridoNum = jerarquia[nivelRequerido] || 999;
+
+      if (nivelActualNum < nivelRequeridoNum) {
+        return res.status(403).json({ 
+          error: { 
+            code: "INSUFFICIENT_LEVEL", 
+            message: `Se requiere nivel ${nivelRequerido} o superior`,
+            currentLevel: nivelActual,
+            requiredLevel: nivelRequerido
+          } 
+        });
+      }
+
+      return next();
+    });
+  };
+};
+
+/**
+ * CORREGIDO: Middleware para requerir permiso específico
+ */
+const requirePermission = (permiso) => {
+  return (req, res, next) => {
+    // Primero ejecutar requireAdmin
+    requireAdmin(req, res, (err) => {
+      if (err) {
+        return; // requireAdmin ya envió la respuesta
+      }
+
+      if (!req.admin) {
+        return res.status(403).json({ 
+          error: { 
+            code: "FORBIDDEN", 
+            message: "Admin requerido" 
+          } 
+        });
+      }
+
+      // API Key tiene todos los permisos
+      if (req.admin.method === "api-key") {
+        return next();
+      }
+
+      if (!req.admin.tienePermiso(permiso)) {
+        return res.status(403).json({ 
+          error: { 
+            code: "INSUFFICIENT_PERMISSIONS", 
+            message: `Permiso requerido: ${permiso}`,
+            currentPermissions: req.admin.permisos
+          } 
+        });
+      }
+
+      return next();
+    });
+  };
+};
+
+/**
+ * CORREGIDO: Middleware para verificar si puede gestionar un recurso
+ */
+const requireResourceAccess = (recurso) => {
+  return (req, res, next) => {
+    requireAdmin(req, res, (err) => {
+      if (err) {
+        return;
+      }
+
+      if (!req.admin) {
+        return res.status(403).json({ 
+          error: { 
+            code: "FORBIDDEN", 
+            message: "Admin requerido" 
+          } 
+        });
+      }
+
+      if (req.admin.method === "api-key") {
+        return next();
+      }
+
+      if (!req.admin.puedeGestionar(recurso)) {
+        return res.status(403).json({ 
+          error: { 
+            code: "RESOURCE_ACCESS_DENIED", 
+            message: `Sin acceso al recurso: ${recurso}`
+          } 
+        });
+      }
+
+      return next();
+    });
+  };
+};
+
+module.exports = {
+  requireAdmin,
+  requireAdminLevel,
+  requirePermission,
+  requireResourceAccess
 };

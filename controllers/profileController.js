@@ -140,12 +140,30 @@ const eliminarCuenta = async (req, res) => {
     const uid = req.usuario?._id || req.usuarioId;
     if (!uid) return res.status(401).json({ mensaje: "No autenticado" });
 
-    const user = await Usuario.findById(uid).lean();
+    // 👇 VALIDACIÓN DE CONTRASEÑA AGREGADA
+    const { password } = req.body;
+    if (!password) {
+      return res.status(400).json({ mensaje: "Contraseña requerida para eliminar cuenta" });
+    }
+
+    // Buscar usuario con contraseña para validar
+    const user = await Usuario.findById(uid).select("+contraseña");
     if (!user) return res.status(404).json({ mensaje: "Usuario no encontrado" });
+
+    // Verificar contraseña
+    const esValida = await user.comprobarPassword(password);
+    if (!esValida) {
+      return res.status(401).json({ mensaje: "Contraseña incorrecta" });
+    }
+    // 👆 FIN DE VALIDACIÓN
+
+    // Convertir a objeto plano para guardar en CuentasEliminadas
+    const userData = user.toObject();
+    delete userData.contraseña; // No guardar la contraseña hasheada
 
     await CuentaEliminada.create({
       originalId: user._id,
-      datos: user,
+      datos: userData,
     });
 
     await Usuario.findByIdAndDelete(uid);
@@ -155,7 +173,7 @@ const eliminarCuenta = async (req, res) => {
         httpOnly: true,
         sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
         secure: process.env.NODE_ENV === "production",
-        path: "/api",
+        path: "/",
       });
     } catch {}
 

@@ -57,6 +57,8 @@ if (process.env.NODE_ENV === "production") {
 
 
 // Helmet
+// Solo la sección de Helmet CSP modificada - líneas ~50-70 aproximadamente
+
 app.use(helmet({
   crossOriginResourcePolicy: false,
   hsts: false,
@@ -69,11 +71,12 @@ app.use(helmet({
       fontSrc: ["'self'", "https:", "data:"],
       formAction: ["'self'"],
       frameAncestors: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:", "https://cdn.jsdelivr.net"],
+      imgSrc: ["'self'", "data:", "https:", "https://cdn.jsdelivr.net", "https://res.cloudinary.com"],
       objectSrc: ["'none'"],
-      scriptSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"], // 👈 Permite inline scripts
       scriptSrcAttr: ["'none'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
+      connectSrc: ["'self'", "https:", "wss:", "ws:"], // 👈 Para WebSockets
       upgradeInsecureRequests: []
     }
   }
